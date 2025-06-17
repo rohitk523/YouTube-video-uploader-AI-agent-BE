@@ -18,8 +18,8 @@ services:
     networks:
       - youtube-shorts-network
     depends_on:
-      postgres:
-        condition: service_healthy
+      # postgres:
+      #   condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
@@ -29,29 +29,29 @@ services:
       retries: 3
       start_period: 40s
 
-  postgres:
-    image: postgres:15-alpine
-    container_name: youtube-shorts-postgres
-    restart: unless-stopped
-    env_file:
-      - .env.dev
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-youtube_shorts_dev}
-      POSTGRES_USER: ${POSTGRES_USER:-dev_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password}
-      PGDATA: /var/lib/postgresql/data/pgdata
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./init-scripts:/docker-entrypoint-initdb.d
-    networks:
-      - youtube-shorts-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-user} -d ${POSTGRES_DB:-youtube_shorts}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: youtube-shorts-postgres
+  #   restart: unless-stopped
+  #   env_file:
+  #     - .env.dev
+  #   environment:
+  #     POSTGRES_DB: ${POSTGRES_DB:-youtube_shorts_dev}
+  #     POSTGRES_USER: ${POSTGRES_USER:-dev_user}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password}
+  #     PGDATA: /var/lib/postgresql/data/pgdata
+  #   ports:
+  #     - "${POSTGRES_PORT:-5432}:5432"
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #     - ./init-scripts:/docker-entrypoint-initdb.d
+  #   networks:
+  #     - youtube-shorts-network
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-user} -d ${POSTGRES_DB:-youtube_shorts}"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
 
   redis:
     image: redis:7-alpine

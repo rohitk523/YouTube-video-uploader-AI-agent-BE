@@ -90,7 +90,7 @@ async def upload_transcript_text(
         "status": "success",
         "message": "Transcript received successfully",
         "content_preview": preview,
-        "character_count": len(transcript_data.content)
+        "character_count": str(len(transcript_data.content))
     }
 
 

@@ -3,7 +3,7 @@ Authentication service for OAuth 2.0 implementation
 """
 
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -75,9 +75,9 @@ class AuthService:
         to_encode = data.copy()
         
         if expires_delta:
-            expire = datetime.utcnow() + expires_delta
+            expire = datetime.now(timezone.utc) + expires_delta
         else:
-            expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+            expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         
         to_encode.update({"exp": expire, "type": "access"})
         
@@ -95,7 +95,7 @@ class AuthService:
             str: JWT refresh token
         """
         to_encode = data.copy()
-        expire = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+        expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
         to_encode.update({"exp": expire, "type": "refresh"})
         
         return jwt.encode(to_encode, settings.secret_key, algorithm=ALGORITHM)
@@ -169,7 +169,7 @@ class AuthService:
         await db.execute(
             update(User)
             .where(User.id == user.id)
-            .values(last_login_at=datetime.utcnow())
+            .values(last_login_at=datetime.now(timezone.utc))
         )
         await db.commit()
         
@@ -345,7 +345,7 @@ class AuthService:
         result = await db.execute(
             update(User)
             .where(User.id == user_id)
-            .values(hashed_password=hashed_password, updated_at=datetime.utcnow())
+            .values(hashed_password=hashed_password, updated_at=datetime.now(timezone.utc))
         )
         
         await db.commit()
@@ -372,7 +372,7 @@ class AuthService:
             Exception: If update fails
         """
         update_data = user_update.model_dump(exclude_unset=True)
-        update_data["updated_at"] = datetime.utcnow()
+        update_data["updated_at"] = datetime.now(timezone.utc)
         
         await db.execute(
             update(User)
@@ -411,7 +411,7 @@ class AuthService:
             .where(User.id == user_id)
             .values(
                 hashed_password=hashed_password,
-                updated_at=datetime.utcnow()
+                updated_at=datetime.now(timezone.utc)
             )
         )
         await db.commit()

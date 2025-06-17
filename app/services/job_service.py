@@ -1,33 +1,29 @@
 """
-Job service for managing YouTube short creation jobs
+Job service for managing YouTube Short creation jobs
 """
 
-import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, func
-from sqlalchemy.orm import selectinload
+from sqlalchemy import select, func, desc
+from sqlalchemy.exc import IntegrityError
 
-from app.config import get_settings
 from app.models.job import Job
 from app.models.upload import Upload
 from app.schemas.job import JobCreate, JobResponse, JobStatus, JobList
 
-settings = get_settings()
-
 
 class JobService:
-    """Service for job management operations."""
+    """Service for managing jobs."""
     
     def __init__(self, db: AsyncSession):
         self.db = db
     
     async def create_job(self, job_data: JobCreate) -> JobResponse:
         """
-        Create a new YouTube short creation job.
+        Create a new job.
         
         Args:
             job_data: Job creation data
@@ -35,10 +31,11 @@ class JobService:
         Returns:
             JobResponse: Created job information
         """
-        # Verify video file exists
-        video_upload = await self._get_upload_by_id(job_data.video_file_id)
-        if not video_upload or video_upload.file_type != "video":
-            raise ValueError("Invalid video file ID")
+        # Validate upload if provided
+        if job_data.upload_id:
+            upload = await self._get_upload_by_id(job_data.upload_id)
+            if not upload:
+                raise ValueError("Upload not found")
         
         # Create job
         job = Job(
@@ -46,19 +43,18 @@ class JobService:
             description=job_data.description,
             voice=job_data.voice,
             tags=job_data.tags,
-            transcript_content=job_data.transcript_content,
-            original_video_path=video_upload.file_path,
-            status="pending",
-            progress=0
+            original_video_path=upload.file_path if job_data.upload_id and upload else None,
+            transcript_content=job_data.transcript_content
         )
         
         self.db.add(job)
         await self.db.commit()
         await self.db.refresh(job)
         
-        # Update upload with job ID
-        video_upload.job_id = job.id
-        await self.db.commit()
+        # Update upload with job_id if provided
+        if job_data.upload_id and upload:
+            upload.job_id = job.id
+            await self.db.commit()
         
         return JobResponse.model_validate(job)
     
@@ -70,7 +66,7 @@ class JobService:
             job_id: Job UUID
             
         Returns:
-            JobResponse or None if not found
+            Optional[JobResponse]: Job information if found
         """
         result = await self.db.execute(
             select(Job).where(Job.id == job_id)
@@ -84,13 +80,13 @@ class JobService:
     
     async def get_job_status(self, job_id: UUID) -> Optional[JobStatus]:
         """
-        Get job status.
+        Get job status and progress.
         
         Args:
             job_id: Job UUID
             
         Returns:
-            JobStatus or None if not found
+            Optional[JobStatus]: Job status if found
         """
         result = await self.db.execute(
             select(Job).where(Job.id == job_id)
@@ -100,16 +96,15 @@ class JobService:
         if not job:
             return None
         
-        # Determine current step based on progress
-        current_step = self._get_current_step(job.progress, job.status)
-        
         return JobStatus(
             id=job.id,
             status=job.status,
             progress=job.progress,
-            current_step=current_step,
+            current_step=self._get_current_step(job.progress, job.status),
             error_message=job.error_message,
-            youtube_url=job.youtube_url
+            created_at=job.created_at,
+            updated_at=job.updated_at,
+            completed_at=job.completed_at
         )
     
     async def list_jobs(
@@ -119,7 +114,7 @@ class JobService:
         status_filter: Optional[str] = None
     ) -> JobList:
         """
-        List jobs with pagination.
+        List jobs with pagination and filtering.
         
         Args:
             page: Page number (1-based)
@@ -190,7 +185,7 @@ class JobService:
         
         # Update progress
         job.progress = progress
-        job.updated_at = datetime.utcnow()
+        job.updated_at = datetime.now(timezone.utc)
         
         # Update status if provided
         if status:
@@ -198,7 +193,7 @@ class JobService:
             
             # Set completion time for finished jobs
             if status in ["completed", "failed"]:
-                job.completed_at = datetime.utcnow()
+                job.completed_at = datetime.now(timezone.utc)
                 
                 # Calculate processing time
                 if job.created_at:
@@ -209,7 +204,7 @@ class JobService:
         if progress == -1:
             job.status = "failed"
             job.error_message = message
-            job.completed_at = datetime.utcnow()
+            job.completed_at = datetime.now(timezone.utc)
         
         await self.db.commit()
         return True
@@ -243,8 +238,8 @@ class JobService:
         job.youtube_url = result_data.get("youtube_url")
         job.youtube_video_id = result_data.get("youtube_video_id")
         job.final_video_path = result_data.get("final_video_path")
-        job.completed_at = datetime.utcnow()
-        job.updated_at = datetime.utcnow()
+        job.completed_at = datetime.now(timezone.utc)
+        job.updated_at = datetime.now(timezone.utc)
         
         # Calculate processing time
         if job.created_at:
@@ -264,28 +259,38 @@ class JobService:
         Returns:
             bool: True if deleted successfully
         """
-        result = await self.db.execute(
-            select(Job).where(Job.id == job_id)
-        )
-        job = result.scalar_one_or_none()
-        
-        if not job:
+        try:
+            # Get the job first
+            result = await self.db.execute(
+                select(Job).where(Job.id == job_id)
+            )
+            job = result.scalar_one_or_none()
+            
+            if not job:
+                return False
+            
+            # Delete associated uploads by setting job_id to NULL first
+            uploads_result = await self.db.execute(
+                select(Upload).where(Upload.job_id == job_id)
+            )
+            uploads = uploads_result.scalars().all()
+            
+            for upload in uploads:
+                upload.job_id = None  # Remove foreign key reference
+                upload.is_active = False  # Mark as inactive
+            
+            # Now delete the job
+            await self.db.delete(job)
+            await self.db.commit()
+            
+            return True
+            
+        except IntegrityError:
+            await self.db.rollback()
             return False
-        
-        # Delete associated uploads
-        uploads_result = await self.db.execute(
-            select(Upload).where(Upload.job_id == job_id)
-        )
-        uploads = uploads_result.scalars().all()
-        
-        for upload in uploads:
-            upload.is_active = False
-        
-        # Delete job
-        await self.db.delete(job)
-        await self.db.commit()
-        
-        return True
+        except Exception:
+            await self.db.rollback()
+            return False
     
     def _get_current_step(self, progress: int, status: str) -> str:
         """

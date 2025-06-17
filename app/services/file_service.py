@@ -152,9 +152,9 @@ class FileService:
         Returns:
             int: Number of files deleted
         """
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
         
-        cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
         
         result = await self.db.execute(
             select(Upload).where(

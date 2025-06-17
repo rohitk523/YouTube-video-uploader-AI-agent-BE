@@ -16,7 +16,7 @@ class JobCreate(BaseModel):
     description: str = Field("", max_length=5000, description="Video description")
     voice: str = Field("alloy", description="TTS voice to use")
     tags: List[str] = Field(default_factory=list, max_length=10, description="Video tags")
-    video_file_id: UUID = Field(..., description="ID of uploaded video file")
+    upload_id: Optional[UUID] = Field(None, description="ID of uploaded video file")
     transcript_content: str = Field(
         ..., 
         min_length=1, 
@@ -56,8 +56,14 @@ class JobResponse(BaseModel):
     updated_at: datetime
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
+    original_video_path: Optional[str] = None
+    transcript_content: Optional[str] = None
+    processed_video_path: Optional[str] = None
+    audio_path: Optional[str] = None
+    final_video_path: Optional[str] = None
     youtube_url: Optional[str] = None
     youtube_video_id: Optional[str] = None
+    video_duration: Optional[int] = None
     processing_time_seconds: Optional[int] = None
     file_size_mb: Optional[float] = None
     
@@ -73,7 +79,9 @@ class JobStatus(BaseModel):
     progress: int
     current_step: str
     error_message: Optional[str] = None
-    youtube_url: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    completed_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True
