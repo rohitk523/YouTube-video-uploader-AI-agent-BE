@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     # File Upload
     max_file_size_mb: int = 100
     upload_directory: str = "./uploads"
-    allowed_video_types: List[str] = ["mp4", "mov", "avi", "mkv"]
-    allowed_transcript_types: List[str] = ["txt", "md"]
+    allowed_video_types_str: str = "mp4,mov,avi,mkv"
+    allowed_transcript_types_str: str = "txt,md"
     
     # YouTube API
     youtube_client_id: str = ""
@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     
     # Security
     secret_key: str = "your-secret-key-change-in-production"
-    cors_origins: List[str] = ["http://localhost:3000", "https://yourdomain.com"]
+    cors_origins_str: str = "http://localhost:3000,https://yourdomain.com"
     
     # Background Jobs
     redis_url: str = "redis://localhost:6379"
@@ -63,9 +63,25 @@ class Settings(BaseSettings):
     static_directory: str = "./static"
     temp_directory: str = "./temp"
     
+    @property
+    def allowed_video_types(self) -> List[str]:
+        """Get allowed video types as a list."""
+        return [ext.strip() for ext in self.allowed_video_types_str.split(',') if ext.strip()]
+    
+    @property
+    def allowed_transcript_types(self) -> List[str]:
+        """Get allowed transcript types as a list."""
+        return [ext.strip() for ext in self.allowed_transcript_types_str.split(',') if ext.strip()]
+    
+    @property 
+    def cors_origins(self) -> List[str]:
+        """Get CORS origins as a list."""
+        return [origin.strip() for origin in self.cors_origins_str.split(',') if origin.strip()]
+
     class Config:
         env_file = get_env_file()
         case_sensitive = False
+        extra = "ignore"  # Ignore extra fields in environment file
 
 
 # Global settings instance
