@@ -7,6 +7,24 @@ from typing import List
 from pydantic_settings import BaseSettings
 
 
+def get_env_file() -> str:
+    """Get environment file based on ENVIRONMENT variable."""
+    environment = os.getenv("ENVIRONMENT", "").lower()
+    
+    if environment == "development":
+        return ".env.dev"
+    elif environment == "production":
+        return ".env.prod"
+    else:
+        # Default fallback order
+        if os.path.exists(".env.dev"):
+            return ".env.dev"
+        elif os.path.exists(".env.prod"):
+            return ".env.prod"
+        else:
+            return ".env"
+
+
 class Settings(BaseSettings):
     """Application settings with environment variable support."""
     
@@ -46,7 +64,7 @@ class Settings(BaseSettings):
     temp_directory: str = "./temp"
     
     class Config:
-        env_file = ".env"
+        env_file = get_env_file()
         case_sensitive = False
 
 

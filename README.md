@@ -81,6 +81,30 @@ pip install -r requirements.txt
 ```
 
 4. **Setup environment variables**
+
+Choose your environment setup:
+
+**Development Environment:**
+```bash
+# Use development startup script (recommended for development)
+./start-dev.sh
+
+# Or manually:
+cp env.template.dev .env.dev
+# Edit .env.dev with your development configuration
+```
+
+**Production Environment:**
+```bash
+# Use production startup script (for production deployment)
+./start-prod.sh
+
+# Or manually:
+cp env.template.prod .env.prod
+# Edit .env.prod with your production configuration
+```
+
+**Legacy (Single Environment):**
 ```bash
 cp env.template .env
 # Edit .env with your configuration

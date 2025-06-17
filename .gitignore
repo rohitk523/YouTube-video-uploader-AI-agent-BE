@@ -65,6 +65,8 @@ static/uploads/
 
 # Environment variables
 .env
+.env.dev
+.env.prod
 .env.local
 .env.production
 .env.staging
