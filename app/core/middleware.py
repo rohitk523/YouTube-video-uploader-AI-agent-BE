@@ -64,7 +64,8 @@ def add_request_logging_middleware(app: FastAPI) -> None:
     import time
     import logging
     
-    logger = logging.getLogger("uvicorn.access")
+    # Use a custom logger name instead of "uvicorn.access" to avoid conflicts
+    logger = logging.getLogger("app.middleware")
     
     class RequestLoggingMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
