@@ -49,6 +49,7 @@ REDIS_COMMANDER_PORT=8081
 ## Available Services
 
 ### Core Services
+- **FastAPI Backend**: Main application server (port 8000)
 - **PostgreSQL**: Database server (port 5432)
 - **Redis**: Cache and background jobs (port 6379)
 
@@ -65,11 +66,14 @@ Start with: `docker-compose --profile tools up -d`
 ## Docker Commands
 
 ```bash
-# Start core services
+# Start all core services (backend, database, redis)
 docker-compose up -d
 
 # Start with management tools
 docker-compose --profile tools up -d
+
+# Start only infrastructure (database and redis, without backend)
+docker-compose up -d postgres redis
 
 # Stop all services
 docker-compose down

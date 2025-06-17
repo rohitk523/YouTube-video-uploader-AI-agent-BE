@@ -51,13 +51,25 @@ mkdir -p uploads temp static logs
 echo "🔍 Checking for services..."
 
 # Check if we should use Docker or local services
-read -p "Do you want to use Docker for services (Redis/PostgreSQL)? (y/n): " use_docker
+echo "Choose your development setup:"
+echo "1) Run everything locally (Redis + PostgreSQL + FastAPI)"
+echo "2) Use Docker for infrastructure only (Redis + PostgreSQL)"
+echo "3) Use Docker for everything (Redis + PostgreSQL + FastAPI Backend)"
+read -p "Enter your choice (1/2/3): " choice
 
-if [ "$use_docker" = "y" ] || [ "$use_docker" = "Y" ]; then
-    echo "🐳 Starting development services with Docker..."
-    docker-compose -f docker-compose.yml up -d
+if [ "$choice" = "2" ]; then
+    echo "🐳 Starting infrastructure services with Docker (Redis + PostgreSQL)..."
+    docker-compose -f docker-compose.yml up -d postgres redis
     echo "⏳ Waiting for services to be ready..."
     sleep 10
+elif [ "$choice" = "3" ]; then
+    echo "🐳 Starting all services with Docker (including FastAPI backend)..."
+    docker-compose -f docker-compose.yml up -d
+    echo "✅ All services started! Backend is running at http://localhost:8000"
+    echo "📖 API Documentation: http://localhost:8000/docs"
+    echo "🏥 Health Check: http://localhost:8000/api/v1/health"
+    echo "🔍 View logs: docker-compose logs -f backend"
+    exit 0
 else
     # Check if Redis is running locally
     if ! pgrep -x "redis-server" > /dev/null; then
