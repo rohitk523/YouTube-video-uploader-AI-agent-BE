@@ -6,6 +6,8 @@ services:
       dockerfile: Dockerfile
     container_name: youtube-shorts-backend
     restart: unless-stopped
+    env_file:
+      - .env.dev
     environment:
       # Database Configuration
       POSTGRES_HOST: postgres
@@ -25,16 +27,16 @@ services:
       SECRET_KEY: ${SECRET_KEY:-your-secret-key-here}
       
       # YouTube API Configuration
-      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY}
-      YOUTUBE_CLIENT_ID: ${YOUTUBE_CLIENT_ID}
-      YOUTUBE_CLIENT_SECRET: ${YOUTUBE_CLIENT_SECRET}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      YOUTUBE_CLIENT_ID: ${YOUTUBE_CLIENT_ID:-}
+      YOUTUBE_CLIENT_SECRET: ${YOUTUBE_CLIENT_SECRET:-}
       
       # OpenAI Configuration
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       
       # AWS Configuration (if using S3)
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_REGION: ${AWS_REGION:-us-east-1}
       
       # Other configurations
@@ -64,6 +66,8 @@ services:
     image: postgres:15-alpine
     container_name: youtube-shorts-postgres
     restart: unless-stopped
+    env_file:
+      - .env.dev
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-youtube_shorts_dev}
       POSTGRES_USER: ${POSTGRES_USER:-dev_user}
@@ -86,6 +90,8 @@ services:
     image: redis:7-alpine
     container_name: youtube-shorts-redis
     restart: unless-stopped
+    env_file:
+      - .env.dev
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
@@ -104,6 +110,8 @@ services:
     image: rediscommander/redis-commander:latest
     container_name: youtube-shorts-redis-commander
     restart: unless-stopped
+    env_file:
+      - .env.dev
     environment:
       REDIS_HOSTS: local:youtube-shorts-redis:6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
@@ -122,6 +130,8 @@ services:
     image: dpage/pgadmin4:latest
     container_name: youtube-shorts-pgadmin
     restart: unless-stopped
+    env_file:
+      - .env.dev
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@admin.com}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
