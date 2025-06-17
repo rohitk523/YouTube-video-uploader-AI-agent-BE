@@ -13,7 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.database import get_db
 from app.models.upload import Upload
+from app.models.user import User
 from app.schemas.upload import FileUploadInfo
+from app.services.auth import AuthService
 
 settings = get_settings()
 security = HTTPBearer(auto_error=False)
@@ -22,18 +24,43 @@ security = HTTPBearer(auto_error=False)
 async def get_current_user(
     token: Optional[str] = Depends(security),
     db: AsyncSession = Depends(get_db)
-) -> dict:
+) -> User:
     """
     Get current user from authentication token.
-    For now, this returns a mock user until proper auth is implemented.
+    
+    Args:
+        token: Bearer token from Authorization header
+        db: Database session
+        
+    Returns:
+        User: Current authenticated user
+        
+    Raises:
+        HTTPException: If authentication fails
     """
-    # TODO: Implement proper JWT token validation
-    # For MVP, we'll use a simple mock user
-    return {
-        "id": "user123",
-        "email": "user@example.com",
-        "is_active": True
-    }
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"}
+    )
+    
+    if not token:
+        raise credentials_exception
+    
+    # HTTPBearer automatically extracts the token from "Bearer <token>" format
+    token_value = token.credentials
+    
+    # Verify token
+    token_data = AuthService.verify_token(token_value)
+    if not token_data:
+        raise credentials_exception
+    
+    # Get user from database
+    user = await AuthService.get_user_by_id(db, token_data.user_id)
+    if not user:
+        raise credentials_exception
+    
+    return user
 
 
 def verify_file_upload(file: UploadFile) -> FileUploadInfo:

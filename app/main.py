@@ -21,7 +21,7 @@ from app.core.dependencies import verify_upload_directory
 from app.schemas.upload import HealthCheck, ApiInfo
 
 # Import API routers
-from app.api import upload, jobs, youtube
+from app.api import upload, jobs, youtube, oauth
 
 settings = get_settings()
 
@@ -97,6 +97,11 @@ except Exception as e:
     logger.warning(f"Could not mount static files: {e}")
 
 # Include API routes
+app.include_router(
+    oauth.router,
+    prefix="/api/v1/oauth",
+    tags=["OAuth 2.0"]
+)
 app.include_router(
     upload.router, 
     prefix="/api/v1/upload", 
