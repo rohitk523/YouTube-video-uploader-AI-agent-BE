@@ -154,7 +154,7 @@ async def list_jobs(
     job_service = JobService(db)
     return await job_service.list_jobs(
         page=page,
-        per_page=per_page,
+        page_size=per_page,
         status_filter=status_filter
     )
 
