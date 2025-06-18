@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import String, DateTime, Boolean, BigInteger, ForeignKey
+from sqlalchemy import String, DateTime, Boolean, BigInteger, ForeignKey, Text
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -29,9 +29,17 @@ class Upload(Base):
     # File details
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
-    file_path: Mapped[str] = mapped_column(String(500), nullable=False)
     file_type: Mapped[str] = mapped_column(String(50), nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    
+    # S3 Storage information
+    s3_bucket: Mapped[str] = mapped_column(String(255), nullable=False)
+    s3_key: Mapped[str] = mapped_column(String(500), nullable=False)
+    s3_url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    is_temp: Mapped[bool] = mapped_column(Boolean, default=True)
+    
+    # Legacy field (kept for backward compatibility, can be removed later)
+    file_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     
     # Timestamps
     upload_time: Mapped[datetime] = mapped_column(
@@ -49,9 +57,19 @@ class Upload(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     
     def __repr__(self) -> str:
-        return f"<Upload(id={self.id}, filename='{self.filename}', file_type='{self.file_type}')>"
+        return f"<Upload(id={self.id}, filename='{self.filename}', file_type='{self.file_type}', s3_key='{self.s3_key}')>"
     
     @property
     def file_size_mb(self) -> float:
         """Get file size in megabytes."""
-        return round(self.file_size_bytes / (1024 * 1024), 2) 
+        return round(self.file_size_bytes / (1024 * 1024), 2)
+    
+    @property
+    def storage_location(self) -> str:
+        """Get the storage location (S3 URL or legacy file path)."""
+        return self.s3_url if self.s3_url else (self.file_path or "")
+    
+    @property
+    def is_s3_stored(self) -> bool:
+        """Check if file is stored in S3."""
+        return bool(self.s3_key and self.s3_bucket) 

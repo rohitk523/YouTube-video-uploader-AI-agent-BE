@@ -7,7 +7,7 @@ services:
     container_name: youtube-shorts-backend
     restart: unless-stopped
     env_file:
-      - .env.dev
+      - .env.prod
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
@@ -58,7 +58,7 @@ services:
     container_name: youtube-shorts-redis
     restart: unless-stopped
     env_file:
-      - .env.dev
+      - .env.prod
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
@@ -70,7 +70,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-dev_password}
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-prod_password}
 
   # Optional: Redis Commander for Redis management
   redis-commander:
@@ -78,7 +78,7 @@ services:
     container_name: youtube-shorts-redis-commander
     restart: unless-stopped
     env_file:
-      - .env.dev
+      - .env.prod
     environment:
       REDIS_HOSTS: local:youtube-shorts-redis:6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
@@ -98,7 +98,7 @@ services:
     container_name: youtube-shorts-pgadmin
     restart: unless-stopped
     env_file:
-      - .env.dev
+      - .env.prod
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@admin.com}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}

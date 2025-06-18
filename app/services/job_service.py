@@ -23,27 +23,37 @@ class JobService:
     
     async def create_job(self, job_data: JobCreate) -> JobResponse:
         """
-        Create a new job.
+        Create a new job with S3 upload support.
         
         Args:
             job_data: Job creation data
             
         Returns:
             JobResponse: Created job information
+            
+        Raises:
+            ValueError: If required uploads not found
         """
-        # Validate upload if provided
-        if job_data.upload_id:
-            upload = await self._get_upload_by_id(job_data.upload_id)
-            if not upload:
-                raise ValueError("Upload not found")
+        # Validate video upload
+        video_upload = await self._get_upload_by_id(job_data.video_upload_id)
+        if not video_upload:
+            raise ValueError("Video upload not found")
         
-        # Create job
+        # Validate transcript upload if provided
+        transcript_upload = None
+        if job_data.transcript_upload_id:
+            transcript_upload = await self._get_upload_by_id(job_data.transcript_upload_id)
+            if not transcript_upload:
+                raise ValueError("Transcript upload not found")
+        
+        # Create job with S3 support
         job = Job(
             title=job_data.title,
             description=job_data.description,
             voice=job_data.voice,
             tags=job_data.tags,
-            original_video_path=upload.file_path if job_data.upload_id and upload else None,
+            video_upload_id=job_data.video_upload_id,
+            transcript_upload_id=job_data.transcript_upload_id,
             transcript_content=job_data.transcript_content
         )
         
@@ -51,14 +61,15 @@ class JobService:
         await self.db.commit()
         await self.db.refresh(job)
         
-        # Update upload with job_id if provided
-        if job_data.upload_id and upload:
-            upload.job_id = job.id
-            await self.db.commit()
+        # Update uploads with job_id
+        video_upload.job_id = job.id
+        if transcript_upload:
+            transcript_upload.job_id = job.id
+        await self.db.commit()
         
         return JobResponse.model_validate(job)
     
-    async def get_job_by_id(self, job_id: UUID) -> Optional[JobResponse]:
+    async def get_job_by_id(self, job_id: UUID) -> Optional[Job]:
         """
         Get job by ID.
         
@@ -66,33 +77,24 @@ class JobService:
             job_id: Job UUID
             
         Returns:
-            Optional[JobResponse]: Job information if found
+            Job model or None if not found
         """
         result = await self.db.execute(
             select(Job).where(Job.id == job_id)
         )
-        job = result.scalar_one_or_none()
-        
-        if not job:
-            return None
-        
-        return JobResponse.model_validate(job)
+        return result.scalar_one_or_none()
     
     async def get_job_status(self, job_id: UUID) -> Optional[JobStatus]:
         """
-        Get job status and progress.
+        Get job status.
         
         Args:
             job_id: Job UUID
             
         Returns:
-            Optional[JobStatus]: Job status if found
+            JobStatus or None if not found
         """
-        result = await self.db.execute(
-            select(Job).where(Job.id == job_id)
-        )
-        job = result.scalar_one_or_none()
-        
+        job = await self.get_job_by_id(job_id)
         if not job:
             return None
         
@@ -100,29 +102,32 @@ class JobService:
             id=job.id,
             status=job.status,
             progress=job.progress,
+            progress_message=job.progress_message,
             current_step=self._get_current_step(job.progress, job.status),
             error_message=job.error_message,
             created_at=job.created_at,
             updated_at=job.updated_at,
-            completed_at=job.completed_at
+            completed_at=job.completed_at,
+            temp_files_cleaned=job.temp_files_cleaned,
+            permanent_storage=job.permanent_storage
         )
     
     async def list_jobs(
         self, 
         page: int = 1, 
-        per_page: int = 20,
+        page_size: int = 20,
         status_filter: Optional[str] = None
     ) -> JobList:
         """
-        List jobs with pagination and filtering.
+        List jobs with pagination.
         
         Args:
             page: Page number (1-based)
-            per_page: Items per page
+            page_size: Items per page
             status_filter: Optional status filter
             
         Returns:
-            JobList: Paginated job list
+            JobList with pagination info
         """
         # Build query
         query = select(Job).order_by(desc(Job.created_at))
@@ -138,23 +143,45 @@ class JobService:
         total_result = await self.db.execute(count_query)
         total = total_result.scalar()
         
-        # Apply pagination
-        offset = (page - 1) * per_page
-        query = query.limit(per_page).offset(offset)
+        # Get paginated results
+        offset = (page - 1) * page_size
+        paginated_query = query.offset(offset).limit(page_size)
         
-        result = await self.db.execute(query)
+        result = await self.db.execute(paginated_query)
         jobs = result.scalars().all()
         
         # Calculate pagination info
-        total_pages = (total + per_page - 1) // per_page
+        total_pages = (total + page_size - 1) // page_size
         
         return JobList(
             jobs=[JobResponse.model_validate(job) for job in jobs],
             total=total,
             page=page,
-            per_page=per_page,
+            page_size=page_size,
             total_pages=total_pages
         )
+    
+    async def delete_job(self, job_id: UUID) -> bool:
+        """
+        Delete a job.
+        
+        Args:
+            job_id: Job UUID
+            
+        Returns:
+            bool: True if deleted successfully
+        """
+        result = await self.db.execute(
+            select(Job).where(Job.id == job_id)
+        )
+        job = result.scalar_one_or_none()
+        
+        if not job:
+            return False
+        
+        await self.db.delete(job)
+        await self.db.commit()
+        return True
     
     async def update_job_progress(
         self, 
@@ -249,48 +276,30 @@ class JobService:
         await self.db.commit()
         return True
     
-    async def delete_job(self, job_id: UUID) -> bool:
+    async def cleanup_job_files(self, job_id: UUID) -> bool:
         """
-        Delete job and associated files.
+        Clean up temporary files for a job.
         
         Args:
             job_id: Job UUID
             
         Returns:
-            bool: True if deleted successfully
+            bool: True if cleanup successful
         """
-        try:
-            # Get the job first
-            result = await self.db.execute(
-                select(Job).where(Job.id == job_id)
-            )
-            job = result.scalar_one_or_none()
-            
-            if not job:
-                return False
-            
-            # Delete associated uploads by setting job_id to NULL first
-            uploads_result = await self.db.execute(
-                select(Upload).where(Upload.job_id == job_id)
-            )
-            uploads = uploads_result.scalars().all()
-            
-            for upload in uploads:
-                upload.job_id = None  # Remove foreign key reference
-                upload.is_active = False  # Mark as inactive
-            
-            # Now delete the job
-            await self.db.delete(job)
-            await self.db.commit()
-            
-            return True
-            
-        except IntegrityError:
-            await self.db.rollback()
+        job_result = await self.db.execute(
+            select(Job).where(Job.id == job_id)
+        )
+        job = job_result.scalar_one_or_none()
+        
+        if not job:
             return False
-        except Exception:
-            await self.db.rollback()
-            return False
+        
+        # Mark as cleaned up
+        job.temp_files_cleaned = True
+        job.updated_at = datetime.now(timezone.utc)
+        
+        await self.db.commit()
+        return True
     
     def _get_current_step(self, progress: int, status: str) -> str:
         """
@@ -325,4 +334,21 @@ class JobService:
         result = await self.db.execute(
             select(Upload).where(Upload.id == upload_id, Upload.is_active == True)
         )
-        return result.scalar_one_or_none() 
+        return result.scalar_one_or_none()
+    
+    async def get_video_s3_url(self, job_id: UUID) -> Optional[str]:
+        """
+        Get S3 URL for the video associated with a job.
+        
+        Args:
+            job_id: Job UUID
+            
+        Returns:
+            S3 URL or None if not found
+        """
+        job = await self.get_job_by_id(job_id)
+        if not job or not job.video_upload_id:
+            return None
+        
+        video_upload = await self._get_upload_by_id(job.video_upload_id)
+        return video_upload.s3_url if video_upload else None 

@@ -111,3 +111,7 @@ docker-compose.override.yml
 # Local development
 .local/
 .cache/ 
+
+client_secret.apps.googleusercontent.com.jsonyoutube_token.pickle
+youtube_token.pickle
+client_secret.apps.googleusercontent.com.json

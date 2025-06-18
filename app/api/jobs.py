@@ -222,11 +222,23 @@ async def process_youtube_short_background(job_id: UUID, job_data: JobCreate):
             if not job:
                 raise Exception("Job not found")
             
+            # Get video S3 URL for processing
+            video_s3_url = await job_service.get_video_s3_url(job_id)
+            if not video_s3_url:
+                raise Exception("Video file not found or not accessible")
+            
+            # Get transcript content
+            transcript_content = job_data.transcript_content
+            if not transcript_content and job.transcript_upload_id:
+                # TODO: Download transcript from S3 if needed
+                # For now, use the provided transcript content
+                transcript_content = job.transcript_content or "Sample transcript"
+            
             # Process the YouTube short
             result = await youtube_service.create_youtube_short_async(
                 job_id=job_id,
-                video_path=job.original_video_path,
-                transcript=job_data.transcript_content,
+                video_path=video_s3_url,  # Use S3 URL instead of local path
+                transcript=transcript_content,
                 title=job_data.title,
                 description=job_data.description,
                 voice=job_data.voice,
