@@ -17,8 +17,11 @@ class JobCreate(BaseModel):
     voice: str = Field("alloy", description="TTS voice to use")
     tags: List[str] = Field(default_factory=list, max_length=10, description="Video tags")
     
-    # S3 Upload references - both are required for job creation
-    video_upload_id: UUID = Field(..., description="ID of uploaded video file in S3")
+    # Video source - either from upload or existing S3 video
+    video_upload_id: Optional[UUID] = Field(None, description="ID of uploaded video file in S3")
+    s3_video_id: Optional[UUID] = Field(None, description="ID of existing S3 video for reuse")
+    
+    # Transcript source
     transcript_upload_id: Optional[UUID] = Field(None, description="ID of uploaded transcript file in S3")
     
     # Direct transcript content (alternative to transcript_upload_id)
@@ -53,10 +56,19 @@ class JobCreate(BaseModel):
         return [tag.strip() for tag in v if tag.strip()]
     
     @model_validator(mode='after')
-    def validate_transcript_source(self) -> "JobCreate":
-        """Validate that either transcript_upload_id or transcript_content is provided."""
+    def validate_sources(self) -> "JobCreate":
+        """Validate video and transcript sources."""
+        # Validate video source
+        if not self.video_upload_id and not self.s3_video_id:
+            raise ValueError("Either video_upload_id or s3_video_id must be provided")
+        
+        if self.video_upload_id and self.s3_video_id:
+            raise ValueError("Provide either video_upload_id or s3_video_id, not both")
+        
+        # Validate transcript source
         if not self.transcript_upload_id and not self.transcript_content:
             raise ValueError("Either transcript_upload_id or transcript_content must be provided")
+        
         return self
 
 
@@ -72,8 +84,9 @@ class JobResponse(BaseModel):
     voice: str
     tags: List[str]
     
-    # Upload references
+    # Video and transcript source references
     video_upload_id: Optional[UUID] = None
+    s3_video_id: Optional[UUID] = None
     transcript_upload_id: Optional[UUID] = None
     
     # Mock mode flag

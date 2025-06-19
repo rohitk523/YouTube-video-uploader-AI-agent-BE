@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.models.job import Job
 from app.models.upload import Upload
+from app.models.video import Video
 from app.schemas.job import JobCreate, JobResponse, JobStatus, JobList
 
 
@@ -32,12 +33,21 @@ class JobService:
             JobResponse: Created job information
             
         Raises:
-            ValueError: If required uploads not found
+            ValueError: If required uploads/videos not found
         """
-        # Validate video upload
-        video_upload = await self._get_upload_by_id(job_data.video_upload_id)
-        if not video_upload:
-            raise ValueError("Video upload not found")
+        # Validate video source - either video_upload_id or s3_video_id must be provided
+        video_upload = None
+        s3_video = None
+        
+        if job_data.video_upload_id:
+            video_upload = await self._get_upload_by_id(job_data.video_upload_id)
+            if not video_upload:
+                raise ValueError("Video upload not found")
+        
+        if job_data.s3_video_id:
+            s3_video = await self._get_video_by_id(job_data.s3_video_id)
+            if not s3_video:
+                raise ValueError("S3 video not found")
         
         # Validate transcript upload if provided
         transcript_upload = None
@@ -53,6 +63,7 @@ class JobService:
             voice=job_data.voice,
             tags=job_data.tags,
             video_upload_id=job_data.video_upload_id,
+            s3_video_id=job_data.s3_video_id,
             transcript_upload_id=job_data.transcript_upload_id,
             transcript_content=job_data.transcript_content,
             mock_mode=job_data.mock_mode
@@ -62,11 +73,14 @@ class JobService:
         await self.db.commit()
         await self.db.refresh(job)
         
-        # Update uploads with job_id
-        video_upload.job_id = job.id
+        # Update uploads with job_id (if applicable)
+        if video_upload:
+            video_upload.job_id = job.id
         if transcript_upload:
             transcript_upload.job_id = job.id
-        await self.db.commit()
+        
+        if video_upload or transcript_upload:
+            await self.db.commit()
         
         return JobResponse.model_validate(job)
     
@@ -333,23 +347,44 @@ class JobService:
     async def _get_upload_by_id(self, upload_id: UUID) -> Optional[Upload]:
         """Get upload by ID."""
         result = await self.db.execute(
-            select(Upload).where(Upload.id == upload_id, Upload.is_active == True)
+            select(Upload).where(Upload.id == upload_id)
         )
         return result.scalar_one_or_none()
-    
+
+    async def _get_video_by_id(self, video_id: UUID) -> Optional[Video]:
+        """Get video by ID."""
+        result = await self.db.execute(
+            select(Video).where(Video.id == video_id, Video.deleted_at.is_(None))
+        )
+        return result.scalar_one_or_none()
+
     async def get_video_s3_url(self, job_id: UUID) -> Optional[str]:
         """
-        Get S3 URL for the video associated with a job.
+        Get video S3 URL for a job - returns S3 key for direct download.
         
         Args:
             job_id: Job UUID
             
         Returns:
-            S3 URL or None if not found
+            S3 key string (not presigned URL) for direct download, or None if not found
         """
         job = await self.get_job_by_id(job_id)
-        if not job or not job.video_upload_id:
+        if not job:
             return None
         
-        video_upload = await self._get_upload_by_id(job.video_upload_id)
-        return video_upload.s3_url if video_upload else None 
+        # Return S3 key instead of presigned URL to avoid presigned URL issues
+        # The video service will handle direct S3 download using boto3
+        
+        # Check if job uses video upload
+        if job.video_upload_id:
+            upload = await self._get_upload_by_id(job.video_upload_id)
+            if upload and upload.s3_key:
+                return f"s3://{upload.s3_bucket}/{upload.s3_key}"
+        
+        # Check if job uses s3 video
+        if job.s3_video_id:
+            video = await self._get_video_by_id(job.s3_video_id)
+            if video and video.s3_key:
+                return f"s3://{video.s3_bucket}/{video.s3_key}"
+        
+        return None 
