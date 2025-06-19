@@ -112,6 +112,7 @@ async def get_youtube_info() -> Dict[str, Any]:
             "video_processing": True,
             "tts_generation": True,
             "youtube_upload": True,
+            "mock_mode": True,
             "supported_formats": ["mp4", "mov", "avi", "mkv"],
             "max_duration": 60,  # seconds
             "output_format": "mp4",
@@ -122,7 +123,7 @@ async def get_youtube_info() -> Dict[str, Any]:
             "Video processing and formatting",
             "Text-to-speech audio generation", 
             "Audio and video combination",
-            "YouTube upload and publishing"
+            "YouTube upload and publishing (or mock mode for download only)"
         ],
         "estimated_processing_time": "2-5 minutes per video"
     }

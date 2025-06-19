@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user
@@ -191,6 +192,83 @@ async def delete_job(
     return {"status": "success", "message": "Job deleted successfully"}
 
 
+@router.get("/{job_id}/download")
+async def download_processed_video(
+    job_id: UUID,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Download the processed video from a completed mock mode job.
+    
+    Args:
+        job_id: Job UUID
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        Redirect to presigned URL for downloading the processed video
+        
+    Raises:
+        HTTPException: If job not found, not completed, or not in mock mode
+    """
+    job_service = JobService(db)
+    job = await job_service.get_job_by_id(job_id)
+    
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found"
+        )
+    
+    if not job.mock_mode:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Download is only available for mock mode jobs. This job was configured to upload to YouTube."
+        )
+    
+    if job.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Job must be completed to download video. Current status: {job.status}"
+        )
+    
+    if not job.final_video_path:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Processed video file not found. The file may have been cleaned up or processing failed."
+        )
+    
+    # Check if file exists
+    import os
+    if not os.path.exists(job.final_video_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Processed video file no longer exists on server. The file may have been cleaned up."
+        )
+    
+    try:
+        # Generate filename for download
+        safe_title = "".join(c for c in job.title if c.isalnum() or c in (' ', '-', '_')).strip()
+        filename = f"{safe_title}_processed.mp4" if safe_title else f"video_{job_id}_processed.mp4"
+        
+        return FileResponse(
+            path=job.final_video_path,
+            media_type="video/mp4",
+            filename=filename,
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Cache-Control": "no-cache"
+            }
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to download video: {str(e)}"
+        )
+
+
 async def process_youtube_short_background(job_id: UUID, job_data: JobCreate):
     """
     Background task to process YouTube short creation.
@@ -242,7 +320,8 @@ async def process_youtube_short_background(job_id: UUID, job_data: JobCreate):
                 title=job_data.title,
                 description=job_data.description,
                 voice=job_data.voice,
-                tags=job_data.tags
+                tags=job_data.tags,
+                mock_mode=job_data.mock_mode
             )
             
             # Update job with completion results
