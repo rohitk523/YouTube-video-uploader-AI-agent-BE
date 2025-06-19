@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import Boolean, DateTime, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from app.database import Base
@@ -107,6 +107,9 @@ class User(Base):
         DateTime(timezone=True),
         nullable=True
     )
+    
+    # Relationships
+    videos = relationship("Video", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         return f"<User(id='{self.id}', email='{self.email}', username='{self.username}')>" 

@@ -44,11 +44,17 @@ class Job(Base):
     # Mock mode flag
     mock_mode: Mapped[bool] = mapped_column(Boolean, default=False)
     
-    # Upload references (linking to Upload model)
+    # Video source references
     video_upload_id: Mapped[Optional[UUID]] = mapped_column(
         PostgresUUID(as_uuid=True),
         ForeignKey("uploads.id")
     )
+    s3_video_id: Mapped[Optional[UUID]] = mapped_column(
+        PostgresUUID(as_uuid=True),
+        ForeignKey("videos.id")
+    )
+    
+    # Transcript source reference
     transcript_upload_id: Mapped[Optional[UUID]] = mapped_column(
         PostgresUUID(as_uuid=True),
         ForeignKey("uploads.id")
