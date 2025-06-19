@@ -499,4 +499,92 @@ class S3Service:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to list files: {str(e)}"
-            ) 
+            )
+
+    async def list_objects(self) -> List[Dict[str, Any]]:
+        """
+        List all objects in the S3 bucket.
+        
+        Returns:
+            List of S3 object information dictionaries
+        """
+        try:
+            response = await asyncio.to_thread(
+                self.s3_client.list_objects_v2,
+                Bucket=self.bucket_name
+            )
+            
+            objects = []
+            for obj in response.get('Contents', []):
+                objects.append({
+                    'Key': obj['Key'],
+                    'Size': obj['Size'],
+                    'LastModified': obj['LastModified'],
+                    'ETag': obj.get('ETag', '').strip('"')
+                })
+            
+            return objects
+            
+        except (ClientError, BotoCoreError) as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to list objects: {str(e)}"
+            )
+
+    def get_object_metadata(self, s3_key: str) -> Dict[str, Any]:
+        """
+        Get object metadata synchronously (for use in sync operations).
+        
+        Args:
+            s3_key: S3 object key
+            
+        Returns:
+            Dict with object metadata
+        """
+        try:
+            response = self.s3_client.head_object(
+                Bucket=self.bucket_name,
+                Key=s3_key
+            )
+            
+            return {
+                'ContentLength': response.get('ContentLength', 0),
+                'ContentType': response.get('ContentType', ''),
+                'LastModified': response.get('LastModified'),
+                'Metadata': response.get('Metadata', {}),
+                'ETag': response.get('ETag', '').strip('"')
+            }
+            
+        except ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                return {}
+            raise e
+
+    def generate_presigned_url_sync(
+        self,
+        s3_key: str,
+        expiration: int = 3600,
+        method: str = 'get_object'
+    ) -> str:
+        """
+        Generate presigned URL synchronously (for use in sync operations).
+        
+        Args:
+            s3_key: S3 object key
+            expiration: URL expiration time in seconds
+            method: S3 method for the URL
+            
+        Returns:
+            Presigned URL string
+        """
+        try:
+            url = self.s3_client.generate_presigned_url(
+                method,
+                Params={'Bucket': self.bucket_name, 'Key': s3_key},
+                ExpiresIn=expiration
+            )
+            
+            return url
+            
+        except (ClientError, BotoCoreError) as e:
+            return f"s3://{self.bucket_name}/{s3_key}"  # Fallback to S3 URI 

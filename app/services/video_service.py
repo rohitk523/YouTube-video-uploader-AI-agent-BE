@@ -114,12 +114,8 @@ class VideoService:
             )
             
         except Exception as e:
-            # If boto3 fails, try converting to presigned URL
-            try:
-                presigned_url = await self._get_presigned_url(s3_url)
-                await self._download_from_https(presigned_url, local_path)
-            except Exception as fallback_error:
-                raise Exception(f"S3 download failed: {str(e)}. Fallback also failed: {str(fallback_error)}")
+            # Direct S3 download failed - don't fall back to presigned URLs since they have permission issues
+            raise Exception(f"S3 direct download failed: {str(e)}. Check AWS credentials and S3 permissions.")
     
     async def _download_from_https(self, url: str, local_path: Path):
         """
@@ -129,13 +125,26 @@ class VideoService:
             url: HTTPS URL
             local_path: Local file path to save to
         """
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            async with client.stream("GET", url) as response:
-                response.raise_for_status()
-                
-                async with aiofiles.open(local_path, 'wb') as f:
-                    async for chunk in response.aiter_bytes(chunk_size=8192):
-                        await f.write(chunk)
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                async with client.stream("GET", url) as response:
+                    # Check for 403 error specifically
+                    if response.status_code == 403:
+                        raise Exception(f"Access denied (403 Forbidden). This usually means the presigned URL has expired or AWS credentials are invalid. URL: {url[:100]}...")
+                    
+                    response.raise_for_status()
+                    
+                    async with aiofiles.open(local_path, 'wb') as f:
+                        async for chunk in response.aiter_bytes(chunk_size=8192):
+                            await f.write(chunk)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 403:
+                raise Exception(f"Access denied (403 Forbidden). This usually means the presigned URL has expired or AWS credentials are invalid. URL: {url[:100]}...")
+            raise Exception(f"HTTP error {e.response.status_code}: {e.response.text}")
+        except Exception as e:
+            if "403" in str(e) or "Forbidden" in str(e):
+                raise Exception(f"Access denied (403 Forbidden). This usually means the presigned URL has expired or AWS credentials are invalid. Original error: {str(e)}")
+            raise
     
     async def _get_presigned_url(self, s3_url: str, expiry: int = 3600) -> str:
         """
