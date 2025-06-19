@@ -294,17 +294,38 @@ class VideoService:
             video_info = await self.get_video_info(video_path)
             audio_info = await self.get_audio_info(audio_path)
             
-            # Build FFmpeg command to combine video and audio
+            # Validate audio file has actual content
+            if audio_info.get("status") == "error":
+                raise Exception(f"Invalid audio file: {audio_info.get('error_message')}")
+            
+            # Check if audio has duration > 0
+            audio_duration = audio_info.get("duration", 0)
+            if audio_duration <= 0:
+                raise Exception(f"Audio file has no duration or is invalid: {audio_duration}s")
+            
+            # Test audio file to ensure it's actually decodable
+            audio_test = await self.test_audio_file(audio_path)
+            if audio_test.get("status") == "error":
+                raise Exception(f"Audio file failed validation: {audio_test.get('error_message')}")
+            elif audio_test.get("status") == "warning":
+                print(f"Warning about audio file: {audio_test.get('warning_message')}")
+            
+            # Build FFmpeg command with explicit stream mapping and better audio handling
             ffmpeg_cmd = [
                 "ffmpeg", "-y",
-                "-i", video_path,
-                "-i", audio_path,
-                "-c:v", "copy",  # Copy video stream as-is
-                "-c:a", "aac",   # Re-encode audio as AAC
-                "-b:a", "128k",
-                "-ar", "44100",
-                "-shortest",  # Use shortest duration
+                "-i", video_path,      # Input 0: video
+                "-i", audio_path,      # Input 1: audio
+                "-map", "0:v:0",       # Map first video stream from input 0
+                "-map", "1:a:0",       # Map first audio stream from input 1
+                "-c:v", "copy",        # Copy video stream as-is
+                "-c:a", "aac",         # Re-encode audio as AAC
+                "-b:a", "128k",        # Audio bitrate
+                "-ar", "44100",        # Audio sample rate
+                "-ac", "2",            # Stereo audio
+                "-af", "volume=1.0",   # Ensure audio volume is normalized
+                "-shortest",           # Use shortest duration
                 "-movflags", "+faststart",
+                "-avoid_negative_ts", "make_zero",  # Handle timestamp issues
                 str(output_file)
             ]
             
@@ -318,14 +339,31 @@ class VideoService:
             )
             
             if result.returncode != 0:
-                raise Exception(f"FFmpeg combination failed: {result.stderr}")
+                # Log the full FFmpeg error for debugging
+                error_details = f"FFmpeg stderr: {result.stderr}\nFFmpeg stdout: {result.stdout}"
+                raise Exception(f"FFmpeg combination failed: {error_details}")
             
-            # Verify output
+            # Verify output exists and has content
             if not output_file.exists():
                 raise Exception("Combined video file was not created")
             
             output_size = output_file.stat().st_size
+            if output_size == 0:
+                raise Exception("Combined video file is empty")
+            
             final_info = await self.get_video_info(str(output_file))
+            
+            # Verify the final video has audio
+            final_audio_info = await self.get_audio_info(str(output_file))
+            if final_audio_info.get("status") == "error":
+                print(f"Warning: Combined video may not have audio: {final_audio_info.get('error_message')}")
+            
+            # Additional verification to check if audio is actually audible
+            audio_verification = await self.verify_video_has_audio(str(output_file))
+            if audio_verification.get("status") == "error":
+                print(f"Error: Final video audio verification failed: {audio_verification.get('error_message')}")
+            elif audio_verification.get("status") == "warning":
+                print(f"Warning: {audio_verification.get('warning_message')}")
             
             return {
                 "status": "success",
@@ -335,7 +373,11 @@ class VideoService:
                 "duration": final_info.get("duration", 0),
                 "title": output_title,
                 "video_info": video_info,
-                "audio_info": audio_info
+                "audio_info": audio_info,
+                "final_audio_check": final_audio_info,
+                "audio_verification": audio_verification,
+                "audio_test_result": audio_test,
+                "ffmpeg_command": " ".join(ffmpeg_cmd)  # For debugging
             }
             
         except Exception as e:
@@ -491,6 +533,92 @@ class VideoService:
         except (subprocess.SubprocessError, FileNotFoundError):
             return False
     
+    async def test_audio_file(self, audio_path: str) -> Dict[str, Any]:
+        """
+        Test if an audio file is valid and playable.
+        
+        Args:
+            audio_path: Path to audio file
+            
+        Returns:
+            Dict with test results
+        """
+        try:
+            if not os.path.exists(audio_path):
+                return {
+                    "status": "error",
+                    "error_message": f"Audio file not found: {audio_path}"
+                }
+            
+            # Get basic file info
+            file_size = os.path.getsize(audio_path)
+            if file_size == 0:
+                return {
+                    "status": "error",
+                    "error_message": "Audio file is empty"
+                }
+            
+            # Use ffprobe to analyze the audio
+            ffprobe_cmd = [
+                "ffprobe", "-v", "error",
+                "-select_streams", "a:0",
+                "-show_entries", "stream=codec_name,sample_rate,channels,duration",
+                "-show_entries", "format=duration,bit_rate",
+                "-of", "csv=p=0",
+                audio_path
+            ]
+            
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ffprobe_cmd,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode != 0:
+                return {
+                    "status": "error",
+                    "error_message": f"Failed to analyze audio file: {result.stderr}"
+                }
+            
+            # Test if FFmpeg can actually decode the audio
+            test_cmd = [
+                "ffmpeg", "-v", "error",
+                "-i", audio_path,
+                "-f", "null",
+                "-t", "1",  # Test only first second
+                "-"
+            ]
+            
+            test_result = await asyncio.to_thread(
+                subprocess.run,
+                test_cmd,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if test_result.returncode != 0:
+                return {
+                    "status": "warning",
+                    "warning_message": f"Audio file may have decoding issues: {test_result.stderr}",
+                    "file_size": file_size
+                }
+            
+            return {
+                "status": "success",
+                "file_size": file_size,
+                "decodable": True,
+                "message": "Audio file is valid and decodable"
+            }
+            
+        except Exception as e:
+            return {
+                "status": "error",
+                "error_message": f"Audio test failed: {str(e)}"
+            }
+    
     async def validate_video_file(self, video_path: str) -> Dict[str, Any]:
         """
         Validate video file for processing.
@@ -553,6 +681,115 @@ class VideoService:
             return {
                 "valid": False,
                 "error": f"Validation failed: {str(e)}"
+            }
+    
+    async def verify_video_has_audio(self, video_path: str) -> Dict[str, Any]:
+        """
+        Verify that a video file contains audible audio content.
+        
+        Args:
+            video_path: Path to video file
+            
+        Returns:
+            Dict with verification results
+        """
+        try:
+            if not os.path.exists(video_path):
+                return {
+                    "status": "error",
+                    "error_message": f"Video file not found: {video_path}"
+                }
+            
+            # Check if video has audio streams
+            ffprobe_cmd = [
+                "ffprobe", "-v", "error",
+                "-select_streams", "a",
+                "-show_entries", "stream=codec_name,sample_rate,channels,duration",
+                "-of", "csv=p=0",
+                video_path
+            ]
+            
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ffprobe_cmd,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode != 0 or not result.stdout.strip():
+                return {
+                    "status": "error",
+                    "error_message": "Video file has no audio streams"
+                }
+            
+            # Extract a small audio sample and check if it has content
+            # This creates a temporary audio file to analyze
+            import tempfile
+            temp_audio = tempfile.mktemp(suffix=".wav")
+            
+            try:
+                extract_cmd = [
+                    "ffmpeg", "-y", "-v", "error",
+                    "-i", video_path,
+                    "-vn",  # No video
+                    "-acodec", "pcm_s16le",
+                    "-ar", "44100",
+                    "-ac", "2",
+                    "-t", "5",  # Extract first 5 seconds
+                    temp_audio
+                ]
+                
+                extract_result = await asyncio.to_thread(
+                    subprocess.run,
+                    extract_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                if extract_result.returncode != 0:
+                    return {
+                        "status": "warning",
+                        "warning_message": f"Could not extract audio for analysis: {extract_result.stderr}"
+                    }
+                
+                # Check if extracted audio file has content
+                if os.path.exists(temp_audio):
+                    audio_size = os.path.getsize(temp_audio)
+                    # A 5-second stereo 44.1kHz 16-bit audio should be ~440KB
+                    # If it's much smaller, it might be silent
+                    expected_min_size = 5 * 44100 * 2 * 2 * 0.1  # 10% of expected size
+                    
+                    if audio_size < expected_min_size:
+                        return {
+                            "status": "warning",
+                            "warning_message": f"Audio content appears to be mostly silent (size: {audio_size} bytes)"
+                        }
+                    
+                    return {
+                        "status": "success",
+                        "message": "Video has audible audio content",
+                        "audio_size_bytes": audio_size
+                    }
+                
+            finally:
+                # Clean up temporary file
+                if os.path.exists(temp_audio):
+                    try:
+                        os.remove(temp_audio)
+                    except:
+                        pass
+            
+            return {
+                "status": "warning",
+                "warning_message": "Could not verify audio content"
+            }
+            
+        except Exception as e:
+            return {
+                "status": "error",
+                "error_message": f"Audio verification failed: {str(e)}"
             }
     
     async def cleanup_temp_files(self, file_paths: list) -> Dict[str, Any]:

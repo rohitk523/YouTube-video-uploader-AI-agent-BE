@@ -338,3 +338,7 @@ For support and questions:
 ---
 
 Built with ❤️ using FastAPI and Google ADK
+
+
+
+while IFS= read -r line; do [[ $line =~ ^[[:space:]]*# ]] || [[ -z $line ]] || export "$line"; done < .env.prod
