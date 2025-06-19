@@ -41,7 +41,8 @@ class YouTubeService:
         title: str,
         description: str = "",
         voice: str = "alloy",
-        tags: Optional[List[str]] = None
+        tags: Optional[List[str]] = None,
+        mock_mode: bool = False
     ) -> Dict[str, Any]:
         """
         Create YouTube short with full processing pipeline.
@@ -54,6 +55,7 @@ class YouTubeService:
             description: Video description
             voice: TTS voice to use
             tags: List of video tags
+            mock_mode: If True, skip YouTube upload and prepare video for download
             
         Returns:
             Dict with processing results
@@ -117,45 +119,79 @@ class YouTubeService:
             self.temp_files.append(final_video_path)
             await self._update_progress(job_id, 75, "Video and audio combined successfully")
             
-            # Step 5: Upload to YouTube
-            await self._update_progress(job_id, 80, "Uploading to YouTube...")
-            upload_result = await self.youtube_upload_service.upload_video_to_youtube(
-                video_path=final_video_path,
-                title=title,
-                description=description,
-                tags=tags or [],
-                category="entertainment",
-                privacy="public"
-            )
-            if upload_result["status"] == "error":
-                raise Exception(upload_result["error_message"])
-            
-            await self._update_progress(job_id, 100, "Successfully uploaded to YouTube!")
-            
-            # Prepare comprehensive result
-            result = {
-                "status": "success",
-                "youtube_url": upload_result["video_url"],
-                "youtube_video_id": upload_result["video_id"],
-                "shorts_url": upload_result.get("shorts_url"),
-                "final_video_path": final_video_path,
-                "processing_steps": {
-                    "video_download": download_result if video_path != local_video_path else None,
-                    "video_processing": video_result,
-                    "audio_generation": audio_result,
-                    "video_combination": combine_result,
-                    "youtube_upload": upload_result
-                },
-                "metadata": {
-                    "original_video_duration": video_result.get("original_info", {}).get("duration"),
-                    "final_video_duration": combine_result.get("duration"),
-                    "audio_duration": audio_result.get("duration"),
-                    "file_size_mb": combine_result.get("file_size_mb"),
-                    "voice_used": voice,
-                    "video_resolution": "1080x1920",
-                    "temp_files_created": len(self.temp_files)
+            # Step 5: Handle YouTube upload or mock mode
+            if mock_mode:
+                await self._update_progress(job_id, 90, "Preparing video for download (mock mode)...")
+                
+                # In mock mode, skip YouTube upload and prepare download
+                await self._update_progress(job_id, 100, "Video processing completed - ready for download!")
+                
+                result = {
+                    "status": "success",
+                    "mock_mode": True,
+                    "download_ready": True,
+                    "final_video_path": final_video_path,
+                    "youtube_url": None,
+                    "youtube_video_id": None,
+                    "shorts_url": None,
+                    "processing_steps": {
+                        "video_download": download_result if video_path != local_video_path else None,
+                        "video_processing": video_result,
+                        "audio_generation": audio_result,
+                        "video_combination": combine_result,
+                        "youtube_upload": {"status": "skipped", "reason": "mock_mode_enabled"}
+                    },
+                    "metadata": {
+                        "original_video_duration": video_result.get("original_info", {}).get("duration"),
+                        "final_video_duration": combine_result.get("duration"),
+                        "audio_duration": audio_result.get("duration"),
+                        "file_size_mb": combine_result.get("file_size_mb"),
+                        "voice_used": voice,
+                        "video_resolution": "1080x1920",
+                        "temp_files_created": len(self.temp_files)
+                    }
                 }
-            }
+            else:
+                await self._update_progress(job_id, 80, "Uploading to YouTube...")
+                upload_result = await self.youtube_upload_service.upload_video_to_youtube(
+                    video_path=final_video_path,
+                    title=title,
+                    description=description,
+                    tags=tags or [],
+                    category="entertainment",
+                    privacy="public"
+                )
+                if upload_result["status"] == "error":
+                    raise Exception(upload_result["error_message"])
+                
+                await self._update_progress(job_id, 100, "Successfully uploaded to YouTube!")
+                
+                # Prepare comprehensive result
+                result = {
+                    "status": "success",
+                    "mock_mode": False,
+                    "download_ready": False,
+                    "youtube_url": upload_result["video_url"],
+                    "youtube_video_id": upload_result["video_id"],
+                    "shorts_url": upload_result.get("shorts_url"),
+                    "final_video_path": final_video_path,
+                    "processing_steps": {
+                        "video_download": download_result if video_path != local_video_path else None,
+                        "video_processing": video_result,
+                        "audio_generation": audio_result,
+                        "video_combination": combine_result,
+                        "youtube_upload": upload_result
+                    },
+                    "metadata": {
+                        "original_video_duration": video_result.get("original_info", {}).get("duration"),
+                        "final_video_duration": combine_result.get("duration"),
+                        "audio_duration": audio_result.get("duration"),
+                        "file_size_mb": combine_result.get("file_size_mb"),
+                        "voice_used": voice,
+                        "video_resolution": "1080x1920",
+                        "temp_files_created": len(self.temp_files)
+                    }
+                }
             
             return result
             
@@ -250,7 +286,8 @@ class YouTubeService:
             "youtube_upload": {
                 "supported_categories": list(self.youtube_upload_service.supported_categories.keys()),
                 "privacy_options": ["public", "unlisted", "private"],
-                "real_uploads_enabled": requirements["requirements"]["youtube_configured"]
+                "real_uploads_enabled": requirements["requirements"]["youtube_configured"],
+                "mock_mode_available": True
             },
             "requirements_status": requirements,
             "estimated_processing_time": "2-5 minutes per video"

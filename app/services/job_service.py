@@ -54,7 +54,8 @@ class JobService:
             tags=job_data.tags,
             video_upload_id=job_data.video_upload_id,
             transcript_upload_id=job_data.transcript_upload_id,
-            transcript_content=job_data.transcript_content
+            transcript_content=job_data.transcript_content,
+            mock_mode=job_data.mock_mode
         )
         
         self.db.add(job)
