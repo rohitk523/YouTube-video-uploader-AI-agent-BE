@@ -29,6 +29,12 @@ class JobCreate(BaseModel):
         description="Direct transcript content (alternative to transcript_upload_id)"
     )
     
+    # Mock mode flag
+    mock_mode: bool = Field(
+        False, 
+        description="If true, skip YouTube upload and make video available for download only"
+    )
+    
     @field_validator("voice")
     @classmethod
     def validate_voice(cls, v: str) -> str:
@@ -69,6 +75,9 @@ class JobResponse(BaseModel):
     # Upload references
     video_upload_id: Optional[UUID] = None
     transcript_upload_id: Optional[UUID] = None
+    
+    # Mock mode flag
+    mock_mode: bool = False
     
     # Timestamps
     created_at: datetime

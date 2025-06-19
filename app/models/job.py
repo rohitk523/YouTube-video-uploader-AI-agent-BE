@@ -41,6 +41,9 @@ class Job(Base):
     voice: Mapped[str] = mapped_column(String(20), default="alloy")
     tags: Mapped[Optional[List[str]]] = mapped_column(ARRAY(String))
     
+    # Mock mode flag
+    mock_mode: Mapped[bool] = mapped_column(Boolean, default=False)
+    
     # Upload references (linking to Upload model)
     video_upload_id: Mapped[Optional[UUID]] = mapped_column(
         PostgresUUID(as_uuid=True),
