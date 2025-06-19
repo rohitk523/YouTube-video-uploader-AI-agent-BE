@@ -11,8 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user, verify_file_upload
 from app.database import get_db
+from app.models.user import User
 from app.schemas.upload import UploadResponse, TranscriptUpload
+from app.schemas.video import VideoCreate
 from app.services.file_service import FileService
+from app.repositories.video_repository import VideoRepository
 from app.config import get_settings
 
 router = APIRouter()
@@ -21,7 +24,7 @@ settings = get_settings()
 
 @router.get("/config/check")
 async def check_s3_config(
-    current_user: Dict[str, Any] = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ) -> Dict[str, Any]:
     """
     Check S3 configuration status.
@@ -94,7 +97,7 @@ def _get_config_recommendations(config_status: Dict[str, Any]) -> List[str]:
 async def upload_video(
     file: UploadFile = File(...),
     is_temp: bool = Query(True, description="Whether this is a temporary upload"),
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> UploadResponse:
     """
@@ -129,6 +132,39 @@ async def upload_video(
             file_type="video",
             is_temp=is_temp
         )
+        
+        # If this is a video and not temporary, also save to videos table for easy reuse
+        if not is_temp and file_info.file_type == "video":
+            try:
+                # Get the upload record to extract S3 details
+                upload_record = await file_service.get_upload_by_id(upload_response.id)
+                if upload_record:
+                    video_repo = VideoRepository(db)
+                    
+                    # Check if video already exists (prevent duplicates)
+                    existing_video = await video_repo.get_by_s3_key(
+                        s3_key=upload_record.s3_key,
+                        user_id=current_user.id
+                    )
+                    
+                    if not existing_video:
+                        # Create video record
+                        video_data = VideoCreate(
+                            filename=upload_record.filename,
+                            original_filename=upload_record.original_filename,
+                            s3_key=upload_record.s3_key,
+                            s3_url=upload_record.s3_url,
+                            s3_bucket=upload_record.s3_bucket,
+                            content_type=file.content_type or "video/mp4",
+                            file_size=upload_record.file_size_bytes,
+                            user_id=current_user.id
+                        )
+                        
+                        await video_repo.create_video(video_data)
+            except Exception as video_save_error:
+                # Log the error but don't fail the upload
+                print(f"Warning: Failed to save video metadata: {str(video_save_error)}")
+        
         return upload_response
     except Exception as e:
         raise HTTPException(
@@ -141,7 +177,7 @@ async def upload_video(
 async def upload_transcript_text(
     transcript_data: TranscriptUpload,
     is_temp: bool = Query(True, description="Whether this is a temporary upload"),
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> UploadResponse:
     """
@@ -182,7 +218,7 @@ async def upload_transcript_text(
 async def upload_transcript_file(
     file: UploadFile = File(...),
     is_temp: bool = Query(True, description="Whether this is a temporary upload"),
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> UploadResponse:
     """
@@ -228,7 +264,7 @@ async def upload_transcript_file(
 @router.get("/{upload_id}", response_model=UploadResponse)
 async def get_upload(
     upload_id: UUID,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> UploadResponse:
     """
@@ -268,7 +304,7 @@ async def get_upload(
 async def download_upload(
     upload_id: UUID,
     use_presigned: bool = Query(True, description="Use presigned URL for download"),
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -336,7 +372,7 @@ async def download_upload(
 @router.post("/{upload_id}/move-to-permanent")
 async def move_to_permanent(
     upload_id: UUID,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> Dict[str, str]:
     """
@@ -368,7 +404,7 @@ async def move_to_permanent(
 @router.delete("/{upload_id}")
 async def delete_upload(
     upload_id: UUID,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> Dict[str, str]:
     """
@@ -400,7 +436,7 @@ async def delete_upload(
 @router.post("/cleanup-temp")
 async def cleanup_temp_files(
     hours: int = Query(24, ge=1, le=168, description="Files older than this many hours will be deleted"),
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> Dict[str, Any]:
     """
@@ -426,7 +462,7 @@ async def cleanup_temp_files(
 
 @router.get("/stats/overview")
 async def get_upload_stats(
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> Dict[str, Any]:
     """
@@ -445,4 +481,193 @@ async def get_upload_stats(
     return {
         "status": "success",
         "statistics": stats
-    } 
+    }
+
+
+@router.get("/debug/s3-test/{s3_key:path}")
+async def debug_s3_access(
+    s3_key: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Debug endpoint to test S3 access for specific files.
+    
+    Args:
+        s3_key: S3 object key to test
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        Dict with debug information
+    """
+    from app.services.s3_service import S3Service
+    
+    try:
+        s3_service = S3Service()
+        
+        # Test 1: Check if file exists
+        try:
+            metadata = await s3_service.get_file_metadata(s3_key)
+            file_exists = metadata is not None
+            metadata_error = None
+        except Exception as e:
+            file_exists = False
+            metadata_error = str(e)
+            metadata = None
+        
+        # Test 2: Try to generate presigned URL
+        try:
+            presigned_url = await s3_service.generate_presigned_url(s3_key, expiration=300)  # 5 minutes
+            presigned_success = True
+            presigned_error = None
+        except Exception as e:
+            presigned_success = False
+            presigned_error = str(e)
+            presigned_url = None
+        
+        # Test 3: Try to download a small chunk
+        download_test = False
+        download_error = None
+        if presigned_url:
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.head(presigned_url)
+                    download_test = response.status_code == 200
+                    if not download_test:
+                        download_error = f"HTTP {response.status_code}: {response.text}"
+            except Exception as e:
+                download_error = str(e)
+        
+        return {
+            "s3_key": s3_key,
+            "bucket": s3_service.bucket_name,
+            "file_exists": file_exists,
+            "metadata": metadata if file_exists else None,
+            "metadata_error": metadata_error if not file_exists else None,
+            "presigned_url_generation": {
+                "success": presigned_success,
+                "url": presigned_url[:100] + "..." if presigned_url and len(presigned_url) > 100 else presigned_url,
+                "error": presigned_error if not presigned_success else None
+            },
+            "download_test": {
+                "success": download_test,
+                "error": download_error
+            }
+        }
+        
+    except Exception as e:
+        return {
+            "error": f"S3 service initialization failed: {str(e)}",
+            "s3_key": s3_key
+        }
+
+
+@router.get("/debug/aws-permissions")
+async def debug_aws_permissions(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Debug endpoint to test AWS IAM permissions.
+    
+    Args:
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        Dict with permissions test results
+    """
+    from app.services.s3_service import S3Service
+    import boto3
+    from app.config import get_settings
+    
+    settings = get_settings()
+    results = {
+        "bucket": settings.s3_bucket_name,
+        "region": settings.aws_region,
+        "tests": {}
+    }
+    
+    try:
+        # Test 1: List bucket objects (s3:ListBucket)
+        try:
+            s3_service = S3Service()
+            s3_client = boto3.client(
+                's3',
+                aws_access_key_id=settings.aws_access_key_id,
+                aws_secret_access_key=settings.aws_secret_access_key,
+                region_name=settings.aws_region
+            )
+            
+            response = s3_client.list_objects_v2(
+                Bucket=settings.s3_bucket_name,
+                Prefix="temp/",
+                MaxKeys=1
+            )
+            results["tests"]["list_bucket"] = {"success": True, "message": "Can list bucket objects"}
+        except Exception as e:
+            results["tests"]["list_bucket"] = {"success": False, "error": str(e)}
+        
+        # Test 2: Get object metadata (s3:GetObject metadata)
+        test_key = "temp/49948364-58bb-4a69-8426-41895624ae3f.mp4"
+        try:
+            response = s3_client.head_object(
+                Bucket=settings.s3_bucket_name,
+                Key=test_key
+            )
+            results["tests"]["head_object"] = {"success": True, "message": "Can read object metadata"}
+        except Exception as e:
+            results["tests"]["head_object"] = {"success": False, "error": str(e)}
+        
+        # Test 3: Get object (s3:GetObject)
+        try:
+            response = s3_client.get_object(
+                Bucket=settings.s3_bucket_name,
+                Key=test_key,
+                Range="bytes=0-1023"  # Just get first 1KB
+            )
+            results["tests"]["get_object"] = {"success": True, "message": "Can download object content"}
+        except Exception as e:
+            results["tests"]["get_object"] = {"success": False, "error": str(e)}
+        
+        # Test 4: Check if bucket region matches configured region
+        try:
+            response = s3_client.get_bucket_location(Bucket=settings.s3_bucket_name)
+            bucket_region = response.get('LocationConstraint') or 'us-east-1'
+            results["tests"]["region_check"] = {
+                "success": bucket_region == settings.aws_region,
+                "bucket_region": bucket_region,
+                "configured_region": settings.aws_region,
+                "message": f"Bucket is in {bucket_region}, configured for {settings.aws_region}"
+            }
+        except Exception as e:
+            results["tests"]["region_check"] = {"success": False, "error": str(e)}
+            
+        # Test 5: Generate and test presigned URL
+        try:
+            presigned_url = s3_client.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': settings.s3_bucket_name, 'Key': test_key},
+                ExpiresIn=300
+            )
+            
+            # Test the presigned URL
+            import httpx
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.head(presigned_url)
+                if response.status_code == 200:
+                    results["tests"]["presigned_url"] = {"success": True, "message": "Presigned URL works"}
+                else:
+                    results["tests"]["presigned_url"] = {
+                        "success": False, 
+                        "error": f"Presigned URL returned HTTP {response.status_code}"
+                    }
+        except Exception as e:
+            results["tests"]["presigned_url"] = {"success": False, "error": str(e)}
+            
+    except Exception as e:
+        results["error"] = f"Failed to initialize AWS client: {str(e)}"
+    
+    return results 

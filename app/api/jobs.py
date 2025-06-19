@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user
 from app.database import get_db
+from app.models.user import User
 from app.schemas.job import JobCreate, JobResponse, JobStatus, JobList
 from app.services.job_service import JobService
 from app.services.youtube_service import YouTubeService
@@ -23,7 +24,7 @@ router = APIRouter()
 async def create_job(
     job_data: JobCreate,
     background_tasks: BackgroundTasks,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> JobResponse:
     """
@@ -71,7 +72,7 @@ async def create_job(
 @router.get("/{job_id}", response_model=JobResponse)
 async def get_job(
     job_id: UUID,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> JobResponse:
     """
@@ -103,7 +104,7 @@ async def get_job(
 @router.get("/{job_id}/status", response_model=JobStatus)
 async def get_job_status(
     job_id: UUID,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> JobStatus:
     """
@@ -137,7 +138,7 @@ async def list_jobs(
     page: int = Query(1, ge=1, description="Page number"),
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
     status_filter: Optional[str] = Query(None, description="Filter by status"),
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> JobList:
     """
@@ -164,7 +165,7 @@ async def list_jobs(
 @router.delete("/{job_id}")
 async def delete_job(
     job_id: UUID,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> Dict[str, str]:
     """
@@ -196,7 +197,7 @@ async def delete_job(
 @router.get("/{job_id}/download")
 async def download_processed_video(
     job_id: UUID,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """

@@ -21,7 +21,7 @@ from app.core.dependencies import verify_upload_directory
 from app.schemas.upload import HealthCheck, ApiInfo
 
 # Import API routers
-from app.api import upload, jobs, youtube, oauth
+from app.api import upload, jobs, youtube, oauth, videos
 
 settings = get_settings()
 
@@ -116,6 +116,11 @@ app.include_router(
     youtube.router, 
     prefix="/api/v1/youtube", 
     tags=["youtube"]
+)
+app.include_router(
+    videos.router,
+    prefix="/api/v1/videos",
+    tags=["videos"]
 )
 
 
