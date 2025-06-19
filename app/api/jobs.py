@@ -14,6 +14,7 @@ from app.database import get_db
 from app.schemas.job import JobCreate, JobResponse, JobStatus, JobList
 from app.services.job_service import JobService
 from app.services.youtube_service import YouTubeService
+from app.services.file_service import FileService
 
 router = APIRouter()
 
@@ -308,9 +309,29 @@ async def process_youtube_short_background(job_id: UUID, job_data: JobCreate):
             # Get transcript content
             transcript_content = job_data.transcript_content
             if not transcript_content and job.transcript_upload_id:
-                # TODO: Download transcript from S3 if needed
-                # For now, use the provided transcript content
-                transcript_content = job.transcript_content or "Sample transcript"
+                # Download transcript from S3
+                try:
+                    file_service = FileService(db)
+                    
+                    # Get the upload record to get S3 details
+                    upload = await file_service.get_upload_by_id(job.transcript_upload_id)
+                    if upload and upload.s3_key:
+                        # Download transcript content from S3
+                        transcript_bytes = await file_service.s3_service.download_file(upload.s3_key)
+                        transcript_content = transcript_bytes.decode('utf-8').strip()
+                        
+                        if not transcript_content:
+                            raise Exception("Downloaded transcript file is empty")
+                            
+                    else:
+                        raise Exception("Transcript upload not found or invalid")
+                    
+                except Exception as e:
+                    raise Exception(f"Failed to download transcript from S3: {str(e)}")
+            
+            # Ensure we have transcript content
+            if not transcript_content:
+                raise Exception("No transcript content available. Please provide transcript_content or upload a valid transcript file.")
             
             # Process the YouTube short
             result = await youtube_service.create_youtube_short_async(
