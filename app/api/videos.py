@@ -564,4 +564,209 @@ async def create_upload_record_for_video(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error creating upload record: {str(e)}"
+        )
+
+
+@router.get("/youtube-videos", response_model=Dict[str, Any])
+async def get_youtube_videos(
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=50, description="Items per page"),
+    next_page_token: str = Query(None, description="YouTube API next page token"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Get paginated list of user's YouTube videos with S3 sync status.
+    
+    Args:
+        page: Page number (1-based)
+        page_size: Number of items per page (max 50)
+        next_page_token: YouTube API pagination token
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        Paginated list of YouTube videos with S3 status
+        
+    Raises:
+        HTTPException: If error occurs during retrieval
+    """
+    try:
+        from app.services.youtube_video_service import YouTubeVideoService
+        
+        youtube_service = YouTubeVideoService(db)
+        
+        # Get YouTube videos from user's channel
+        videos_response = await youtube_service.get_user_youtube_videos(
+            user_id=current_user.id,
+            page_size=page_size,
+            page_token=next_page_token
+        )
+        
+        return {
+            "videos": videos_response["videos"],
+            "total_count": videos_response.get("total_count", len(videos_response["videos"])),
+            "page": page,
+            "page_size": page_size,
+            "has_more": videos_response.get("has_more", False),
+            "next_page_token": videos_response.get("next_page_token"),
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching YouTube videos: {str(e)}"
+        )
+
+
+@router.post("/youtube-videos/{video_id}/add-to-s3")
+async def add_youtube_video_to_s3(
+    video_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Download a YouTube video and add it to S3 storage.
+    
+    Args:
+        video_id: YouTube video ID
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        Information about the S3 upload
+        
+    Raises:
+        HTTPException: If download or upload fails
+    """
+    try:
+        from app.services.youtube_video_service import YouTubeVideoService
+        
+        youtube_service = YouTubeVideoService(db)
+        
+        # Download video from YouTube and upload to S3
+        result = await youtube_service.download_and_upload_to_s3(
+            youtube_video_id=video_id,
+            user_id=current_user.id
+        )
+        
+        return {
+            "success": True,
+            "message": f"Video '{result['title']}' successfully added to S3",
+            "s3_video_id": result["s3_video_id"],
+            "s3_key": result["s3_key"],
+            "download_url": result.get("download_url"),
+            "processing_info": {
+                "file_size_mb": result.get("file_size_mb"),
+                "duration": result.get("duration"),
+                "resolution": result.get("resolution"),
+                "format": result.get("format")
+            }
+        }
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error adding YouTube video to S3: {str(e)}"
+        )
+
+
+@router.post("/youtube-videos/sync-all-to-s3")
+async def sync_all_youtube_videos_to_s3(
+    max_videos: int = Query(50, ge=1, le=100, description="Maximum number of videos to sync"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Sync all YouTube videos to S3 storage (batch operation).
+    
+    Args:
+        max_videos: Maximum number of videos to sync in this batch
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        Summary of sync operation
+        
+    Raises:
+        HTTPException: If sync operation fails
+    """
+    try:
+        from app.services.youtube_video_service import YouTubeVideoService
+        
+        youtube_service = YouTubeVideoService(db)
+        
+        # Start background sync operation
+        result = await youtube_service.sync_all_videos_to_s3(
+            user_id=current_user.id,
+            max_videos=max_videos
+        )
+        
+        return {
+            "success": True,
+            "message": "Sync operation completed",
+            "sync_id": result["sync_id"],
+            "summary": {
+                "total_videos_found": result["total_videos_found"],
+                "videos_already_in_s3": result["videos_already_in_s3"],
+                "videos_synced": result["videos_synced"],
+                "errors": result["errors"],
+                "processing_time_seconds": result["processing_time_seconds"]
+            },
+            "synced_videos": result["synced_videos"]
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error syncing YouTube videos: {str(e)}"
+        )
+
+
+@router.get("/sync-status/{sync_id}")
+async def get_sync_status(
+    sync_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Get the status of a sync operation.
+    
+    Args:
+        sync_id: Sync operation ID
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        Sync operation status and progress
+        
+    Raises:
+        HTTPException: If sync ID not found
+    """
+    try:
+        from app.services.youtube_video_service import YouTubeVideoService
+        
+        youtube_service = YouTubeVideoService(db)
+        
+        status = await youtube_service.get_sync_status(sync_id)
+        
+        if not status:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Sync operation not found"
+            )
+            
+        return status
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error getting sync status: {str(e)}"
         ) 
