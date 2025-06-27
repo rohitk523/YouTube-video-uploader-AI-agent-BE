@@ -7,7 +7,7 @@ from typing import List, Optional
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, update
 from sqlalchemy.exc import IntegrityError
 
 from app.models.job import Job
@@ -178,7 +178,7 @@ class JobService:
     
     async def delete_job(self, job_id: UUID) -> bool:
         """
-        Delete a job.
+        Delete a job and handle related data properly.
         
         Args:
             job_id: Job UUID
@@ -186,17 +186,31 @@ class JobService:
         Returns:
             bool: True if deleted successfully
         """
-        result = await self.db.execute(
-            select(Job).where(Job.id == job_id)
-        )
-        job = result.scalar_one_or_none()
-        
-        if not job:
-            return False
-        
-        await self.db.delete(job)
-        await self.db.commit()
-        return True
+        try:
+            # Get the job first
+            result = await self.db.execute(
+                select(Job).where(Job.id == job_id)
+            )
+            job = result.scalar_one_or_none()
+            
+            if not job:
+                return False
+            
+            # Handle related uploads - set job_id to NULL instead of deleting the uploads
+            # This preserves the upload records in case they're referenced elsewhere
+            from app.models.upload import Upload
+            await self.db.execute(
+                update(Upload).where(Upload.job_id == job_id).values(job_id=None)
+            )
+            
+            # Now delete the job
+            await self.db.delete(job)
+            await self.db.commit()
+            return True
+            
+        except Exception as e:
+            await self.db.rollback()
+            raise e
     
     async def update_job_progress(
         self, 

@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     api_description: str = "AI-powered YouTube Shorts creation and automation"
     
     # File Upload
-    max_file_size_mb: int = 100
+    max_file_size_mb: int = 500
     upload_directory: str = "./uploads"
     allowed_video_types_str: str = "mp4,mov,avi,mkv"
     allowed_transcript_types_str: str = "txt,md"
