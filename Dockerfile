@@ -16,29 +16,35 @@ RUN apt-get update \
         curl \
         ffmpeg \
         libmagic1 \
-    && rm -rf /var/lib/apt/lists/*
+        git \
+        && apt-get clean \
+        && rm -rf /var/lib/apt/lists/* \
+        && apt-get autoremove -y
+
+# Create non-root user early
+RUN adduser --disabled-password --gecos '' --uid 1000 appuser
 
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip cache purge
 
-# Copy project
-COPY . .
-
-# Create necessary directories
-RUN mkdir -p uploads temp static logs
-
-# Create non-root user
-RUN adduser --disabled-password --gecos '' appuser \
+# Create necessary directories with proper permissions
+RUN mkdir -p uploads temp static logs \
     && chown -R appuser:appuser /app
+
+# Copy application files
+COPY --chown=appuser:appuser app/ ./app/
+
+# Switch to non-root user
 USER appuser
 
 # Expose port
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/api/v1/health || exit 1
 
 # Run the application
