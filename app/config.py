@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     secret_key: str = "your-secret-key-change-this-in-production"
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
-    cors_origins_str: str = "http://localhost:3000,https://yourdomain.com"
+    cors_origins_str: str = "http://localhost:3000,https://yourdomain.com,https://rohitk523.github.io"
     
     # Background Jobs
     redis_url: Optional[str] = None
