@@ -152,9 +152,11 @@ async def health_check() -> HealthCheck:
     database_connected = True
     try:
         from app.database import engine
+        from sqlalchemy import text
         async with engine.connect() as conn:
-            await conn.execute("SELECT 1")
-    except Exception:
+            await conn.execute(text("SELECT 1"))
+    except Exception as e:
+        logger.error(f"Database health check failed: {e}")
         database_connected = False
     
     # Check upload directory
