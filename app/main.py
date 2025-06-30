@@ -143,30 +143,25 @@ async def root() -> dict:
 @app.get("/api/v1/health", response_model=HealthCheck)
 async def health_check() -> HealthCheck:
     """
-    Simplified health check endpoint.
+    Health check endpoint.
     
     Returns:
-        HealthCheck: Application health status with same format for frontend
+        HealthCheck: Application health status
     """
-    # Simple database connection check
+    # Check database connection
     database_connected = True
     try:
         from app.database import engine
-        # Quick connection test with timeout
         async with engine.connect() as conn:
             await conn.execute("SELECT 1")
-    except Exception as e:
-        logger.error(f"Health check database error: {e}")
+    except Exception:
         database_connected = False
     
-    # Check upload directory accessibility
+    # Check upload directory
     upload_directory_accessible = verify_upload_directory()
     
-    # Determine overall health status
-    overall_status = "healthy" if database_connected and upload_directory_accessible else "unhealthy"
-    
     return HealthCheck(
-        status=overall_status,
+        status="healthy" if database_connected and upload_directory_accessible else "unhealthy",
         timestamp=datetime.now(),
         version=settings.version,
         database_connected=database_connected,
