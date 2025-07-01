@@ -1,0 +1,93 @@
+# Railway Configuration for YouTube Video Uploader API
+# Documentation: https://docs.railway.com/guides/config-as-code
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/api/v1/health"
+healthcheckTimeout = 100
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+[variables]
+# Railway will automatically provide PORT variable
+# Python optimization variables
+PYTHONDONTWRITEBYTECODE = "1"
+PYTHONUNBUFFERED = "1"
+
+# Environment variables to be set in Railway dashboard:
+
+# === REQUIRED VARIABLES ===
+
+# Application Settings
+# - APP_NAME=YouTube Shorts Creator API (Prod)
+# - VERSION=1.0.0-prod
+# - DEBUG=false
+# - ENVIRONMENT=production
+
+# Database Configuration
+# - DATABASE_URL (Railway can auto-provide PostgreSQL)
+# - POSTGRES_DB (if using Railway PostgreSQL)
+# - POSTGRES_USER (if using Railway PostgreSQL)
+# - POSTGRES_PASSWORD (if using Railway PostgreSQL)
+
+# Redis Configuration (if needed)
+# - REDIS_URL (Railway can auto-provide Redis)
+
+# AWS S3 Configuration (REQUIRED)
+# - AWS_ACCESS_KEY_ID
+# - AWS_SECRET_ACCESS_KEY
+# - AWS_REGION=us-east-1
+# - S3_BUCKET_NAME
+# - S3_VIDEOS_PREFIX=videos/
+# - S3_TRANSCRIPTS_PREFIX=transcripts/
+# - S3_TEMP_PREFIX=temp/
+# - S3_PROCESSED_PREFIX=processed/
+
+# YouTube API Configuration (REQUIRED)
+# - YOUTUBE_API_KEY
+# - YOUTUBE_CLIENT_SECRETS_FILE
+
+# Security Settings (REQUIRED)
+# - SECRET_KEY (generate a secure 256-bit secret key)
+
+# OpenAI Configuration (if using AI features)
+# - OPENAI_API_KEY
+
+# CORS Configuration
+# - CORS_ORIGINS_STR (your frontend domain URLs, comma-separated)
+
+# === OPTIONAL VARIABLES (with defaults) ===
+
+# OAuth 2.0 Settings
+# - OAUTH_ACCESS_TOKEN_EXPIRE_MINUTES=30
+# - OAUTH_REFRESH_TOKEN_EXPIRE_DAYS=7
+# - OAUTH_ALGORITHM=HS256
+
+# File Upload Settings
+# - MAX_FILE_SIZE_MB=500
+# - ALLOWED_VIDEO_TYPES_STR=mp4,mov,avi,mkv
+# - ALLOWED_TRANSCRIPT_TYPES_STR=txt,md
+
+# S3 Settings
+# - S3_PRESIGNED_URL_EXPIRY=3600
+# - S3_MULTIPART_THRESHOLD=104857600
+# - S3_CLEANUP_TEMP_HOURS=24
+
+# Background Jobs
+# - JOB_TIMEOUT_MINUTES=15
+# - CLEANUP_INTERVAL_HOURS=6
+
+# Logging
+# - LOG_LEVEL=INFO
+
+# Server Settings (Railway will override PORT)
+# - WORKERS=4
+# - HOST=0.0.0.0
+
+# === OPTIONAL MONITORING ===
+# - SENTRY_DSN (for error monitoring)
+# - MONITORING_ENDPOINT 
