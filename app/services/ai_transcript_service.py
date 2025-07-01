@@ -29,7 +29,7 @@ if settings.langfuse_configured:
             secret_key=settings.langfuse_secret_key,
             public_key=settings.langfuse_public_key,
             host=settings.langfuse_host,
-            tracing_enabled=False,  # Disable tracing to prevent 500 errors
+            tracing_enabled=True,  # Disable tracing to prevent 500 errors
             flush_at=1,  # Reduce batching
             flush_interval=1.0  # Flush more frequently
         )
