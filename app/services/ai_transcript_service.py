@@ -28,10 +28,15 @@ if settings.langfuse_configured:
             public_key=settings.langfuse_public_key,
             host=settings.langfuse_host
         )
+        logger.error(f"LANGFUSE_INIT: SUCCESS! Langfuse initialized with host: {settings.langfuse_host}")
     except ImportError:
+        logger.error("LANGFUSE_INIT: FAILED! Langfuse not installed but configured")
         logger.warning("Langfuse not installed but configured. Install with: pip install langfuse")
     except Exception as e:
+        logger.error(f"LANGFUSE_INIT: FAILED! Exception: {e}")
         logger.warning(f"Failed to initialize Langfuse: {e}")
+else:
+    logger.error(f"LANGFUSE_INIT: NOT_CONFIGURED! configured={settings.langfuse_configured}")
 
 
 class AITranscriptService:
@@ -48,6 +53,11 @@ class AITranscriptService:
         # Set up prompt file path
         self.prompt_file_path = Path(__file__).parent.parent.parent / "prompts" / "transcript_generation.txt"
         
+        # Log initialization status for debugging
+        logger.error(f"AI_TRANSCRIPT_INIT: Langfuse available: {self.langfuse is not None}")
+        logger.error(f"AI_TRANSCRIPT_INIT: Prompt file path: {self.prompt_file_path}")
+        logger.error(f"AI_TRANSCRIPT_INIT: Prompt file exists: {self.prompt_file_path.exists()}")
+        
         # Default model settings
         self.default_model = "gpt-4"
         self.fallback_model = "gpt-3.5-turbo"
@@ -62,20 +72,28 @@ class AITranscriptService:
         Returns:
             Prompt template string
         """
+        # Add ERROR level logging to ensure visibility in production
+        logger.error(f"PROMPT_LOADING: Starting prompt load. Langfuse available: {self.langfuse is not None}")
+        
         try:
             if self.langfuse:
                 # Fetch the prompt from Langfuse
+                logger.error("PROMPT_LOADING: Attempting to fetch from Langfuse...")
                 prompt_response = self.langfuse.get_prompt("transcript_generation")
                 if prompt_response and hasattr(prompt_response, 'prompt'):
+                    logger.error(f"PROMPT_LOADING: SUCCESS! Loaded from Langfuse, length: {len(prompt_response.prompt)}")
                     logger.info("Successfully loaded prompt from Langfuse")
                     return prompt_response.prompt
                 else:
+                    logger.error("PROMPT_LOADING: FAILED! Prompt not found in Langfuse, using fallback")
                     logger.warning("Prompt 'transcript_generation' not found in Langfuse, falling back to file/hardcoded prompt")
                     return self._get_fallback_prompt()
             else:
+                logger.error("PROMPT_LOADING: FAILED! Langfuse not available, using fallback")
                 logger.info("Langfuse not configured, using file/hardcoded prompt fallback")
                 return self._get_fallback_prompt()
         except Exception as e:
+            logger.error(f"PROMPT_LOADING: ERROR! Exception occurred: {e}, using fallback")
             logger.warning(f"Failed to load prompt from Langfuse: {e}, falling back to file/hardcoded prompt")
             return self._get_fallback_prompt()
     
@@ -87,22 +105,30 @@ class AITranscriptService:
         Returns:
             Fallback prompt string
         """
+        logger.error("FALLBACK_PROMPT: Starting fallback prompt selection")
+        
         try:
             # Try to read from the prompt file
             if self.prompt_file_path.exists():
+                logger.error(f"FALLBACK_PROMPT: File exists, attempting to read: {self.prompt_file_path}")
                 with open(self.prompt_file_path, 'r', encoding='utf-8') as f:
                     file_content = f.read().strip()
                     if file_content:
+                        logger.error(f"FALLBACK_PROMPT: SUCCESS! Using file prompt, length: {len(file_content)}")
                         logger.info(f"Using prompt from file: {self.prompt_file_path}")
                         return file_content
                     else:
+                        logger.error(f"FALLBACK_PROMPT: FAILED! File is empty: {self.prompt_file_path}")
                         logger.warning(f"Prompt file is empty: {self.prompt_file_path}")
             else:
+                logger.error(f"FALLBACK_PROMPT: FAILED! File not found: {self.prompt_file_path}")
                 logger.warning(f"Prompt file not found: {self.prompt_file_path}")
         except Exception as e:
+            logger.error(f"FALLBACK_PROMPT: ERROR! Exception reading file: {e}")
             logger.warning(f"Failed to read prompt file {self.prompt_file_path}: {e}")
         
         # Last resort: basic hardcoded prompt
+        logger.error("FALLBACK_PROMPT: LAST_RESORT! Using basic hardcoded prompt")
         logger.info("Using basic hardcoded fallback prompt")
         return """You are an expert YouTube Shorts script writer who creates engaging, viral content. 
         Create a compelling transcript for a YouTube Short based on the user's context.
