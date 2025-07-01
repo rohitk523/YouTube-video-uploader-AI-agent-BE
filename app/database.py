@@ -23,7 +23,9 @@ engine = create_async_engine(
 AsyncSessionLocal = async_sessionmaker(
     engine,
     class_=AsyncSession,
-    expire_on_commit=False
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=True
 )
 
 
@@ -42,6 +44,12 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         try:
             yield session
+            # Only commit if there are pending changes
+            if session.dirty or session.new or session.deleted:
+                await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
         finally:
             await session.close()
 
