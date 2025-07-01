@@ -5,6 +5,7 @@ Text-to-Speech service for generating AI voiceovers
 import asyncio
 import tempfile
 import os
+import hashlib
 from typing import Dict, Any, Optional
 from pathlib import Path
 
@@ -25,6 +26,191 @@ class TTSService:
         self.client = AsyncOpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
         self.supported_voices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
         self.supported_models = ["tts-1", "tts-1-hd"]
+        
+        # Cache directory for voice previews
+        self.cache_dir = Path(tempfile.gettempdir()) / "tts_cache"
+        self.cache_dir.mkdir(exist_ok=True)
+        
+        # Default preview texts for each voice (for better caching)
+        self.default_preview_texts = {
+            "alloy": "Hello! This is how I sound. Perfect for your YouTube Shorts.",
+            "echo": "Hey there! This is my energetic voice for your amazing content.",
+            "fable": "Greetings! Let me tell you the story of your next viral video.",
+            "onyx": "Good day. This is my authoritative voice for professional content.",
+            "nova": "Hi! I'm excited to bring your bright ideas to life!",
+            "shimmer": "Hello, dear creator. Let me gently narrate your beautiful story."
+        }
+    
+    def _get_cache_key(self, text: str, voice: str, model: str, speed: float) -> str:
+        """
+        Generate cache key for TTS audio.
+        
+        Args:
+            text: Input text
+            voice: Voice name
+            model: TTS model
+            speed: Speech speed
+            
+        Returns:
+            Cache key string
+        """
+        # Create a hash from the parameters
+        content = f"{text}|{voice}|{model}|{speed}"
+        return hashlib.md5(content.encode()).hexdigest()
+    
+    def _get_cached_audio_path(self, cache_key: str, output_format: str) -> Path:
+        """
+        Get path for cached audio file.
+        
+        Args:
+            cache_key: Cache key
+            output_format: Audio format
+            
+        Returns:
+            Path to cached audio file
+        """
+        return self.cache_dir / f"{cache_key}.{output_format}"
+    
+    async def _is_cache_valid(self, cache_path: Path, max_age_hours: int = 24) -> bool:
+        """
+        Check if cached audio file is still valid.
+        
+        Args:
+            cache_path: Path to cached file
+            max_age_hours: Maximum age in hours
+            
+        Returns:
+            True if cache is valid
+        """
+        if not cache_path.exists():
+            return False
+        
+        # Check file age
+        import time
+        file_age = time.time() - cache_path.stat().st_mtime
+        max_age_seconds = max_age_hours * 3600
+        
+        return file_age < max_age_seconds
+    
+    async def generate_voice_preview(
+        self,
+        voice: str,
+        custom_text: Optional[str] = None,
+        use_cache: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Generate voice preview with caching for better performance.
+        
+        Args:
+            voice: Voice to use
+            custom_text: Custom text (if None, uses default for voice)
+            use_cache: Whether to use cached results
+            
+        Returns:
+            Dict with audio file information
+        """
+        # Use default text for voice if no custom text provided
+        text = custom_text or self.default_preview_texts.get(voice, 
+            "Hello! This is how I sound. Perfect for your YouTube Shorts.")
+        
+        # Limit text length for previews
+        if len(text) > 200:
+            text = text[:200] + "..."
+        
+        # Generate cache key
+        cache_key = self._get_cache_key(text, voice, "tts-1", 1.0)
+        cache_path = self._get_cached_audio_path(cache_key, "mp3")
+        
+        # Check cache first if enabled
+        if use_cache and await self._is_cache_valid(cache_path):
+            file_size = cache_path.stat().st_size
+            duration = self._estimate_duration(text, 1.0)
+            
+            return {
+                "status": "success",
+                "audio_path": str(cache_path),
+                "duration": duration,
+                "voice": voice,
+                "model": "tts-1",
+                "speed": 1.0,
+                "format": "mp3",
+                "file_size_bytes": file_size,
+                "text_length": len(text),
+                "cached": True,
+                "preview_text": text
+            }
+        
+        # Generate new audio
+        result = await self.generate_speech(
+            text=text,
+            voice=voice,
+            model="tts-1",  # Use faster model for previews
+            speed=1.0,
+            output_format="mp3"
+        )
+        
+        if result["status"] == "success" and use_cache:
+            # Copy to cache
+            try:
+                original_path = Path(result["audio_path"])
+                if original_path.exists():
+                    import shutil
+                    shutil.copy2(original_path, cache_path)
+                    result["cached"] = False
+                    result["cache_created"] = True
+            except Exception as e:
+                print(f"Failed to cache audio: {e}")
+        
+        result["preview_text"] = text
+        return result
+    
+    async def cleanup_cache(self, max_age_hours: int = 48) -> Dict[str, Any]:
+        """
+        Clean up old cached audio files.
+        
+        Args:
+            max_age_hours: Maximum age for cache files
+            
+        Returns:
+            Dict with cleanup results
+        """
+        cleaned_files = []
+        failed_files = []
+        total_size_freed = 0
+        
+        try:
+            import time
+            current_time = time.time()
+            max_age_seconds = max_age_hours * 3600
+            
+            for cache_file in self.cache_dir.glob("*.mp3"):
+                try:
+                    file_age = current_time - cache_file.stat().st_mtime
+                    if file_age > max_age_seconds:
+                        file_size = cache_file.stat().st_size
+                        cache_file.unlink()
+                        cleaned_files.append(str(cache_file))
+                        total_size_freed += file_size
+                except Exception as e:
+                    failed_files.append({"file": str(cache_file), "error": str(e)})
+        
+        except Exception as e:
+            return {
+                "status": "error",
+                "error_message": f"Cache cleanup failed: {str(e)}"
+            }
+        
+        return {
+            "status": "success",
+            "cleaned_files": len(cleaned_files),
+            "failed_files": len(failed_files),
+            "total_size_freed_bytes": total_size_freed,
+            "total_size_freed_mb": round(total_size_freed / (1024 * 1024), 2),
+            "details": {
+                "cleaned": cleaned_files,
+                "failed": failed_files
+            }
+        }
     
     async def generate_speech(
         self,

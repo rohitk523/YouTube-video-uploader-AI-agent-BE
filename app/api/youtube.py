@@ -407,4 +407,258 @@ async def upload_processed_video_to_youtube(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to upload video to YouTube: {str(e)}"
+        )
+
+
+@router.post("/voices/preview")
+async def generate_voice_preview(
+    voice: str,
+    text: str = "Hello! This is how I sound. Perfect for your YouTube Shorts.",
+    current_user = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """
+    Generate a voice preview for the specified voice.
+    
+    Args:
+        voice: Voice name to preview (alloy, echo, fable, onyx, nova, shimmer)
+        text: Optional custom text to preview (default: standard preview text)
+        
+    Returns:
+        Dict with preview audio information and download URL
+    """
+    try:
+        youtube_service = YouTubeService()
+        
+        # Validate voice
+        supported_voices = youtube_service.get_supported_voices()
+        if voice not in supported_voices:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported voice: {voice}. Supported voices: {supported_voices}"
+            )
+        
+        # Limit preview text length
+        if len(text) > 200:
+            text = text[:200] + "..."
+        
+        # Generate preview audio with caching
+        audio_result = await youtube_service.tts_service.generate_voice_preview(
+            voice=voice,
+            custom_text=text if text != "Hello! This is how I sound. Perfect for your YouTube Shorts." else None,
+            use_cache=True
+        )
+        
+        if audio_result["status"] == "error":
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to generate voice preview: {audio_result['error_message']}"
+            )
+        
+        # Get voice information
+        voice_info = youtube_service.get_voice_info()
+        voice_details = voice_info["voices"].get(voice, {})
+        
+        return {
+            "status": "success",
+            "voice": voice,
+            "audio_path": audio_result["audio_path"],
+            "duration": audio_result["duration"],
+            "file_size_bytes": audio_result["file_size_bytes"],
+            "voice_info": {
+                "name": voice_details.get("name", voice.title()),
+                "description": voice_details.get("description", ""),
+                "style": voice_details.get("style", ""),
+                "recommended_for": voice_details.get("recommended_for", [])
+            },
+            "preview_text": text,
+            "download_url": f"/api/v1/youtube/voices/preview/{voice}/download",
+            "expires_in_minutes": 15  # Audio files expire in 15 minutes
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+@router.get("/voices/preview/{voice}/download")
+async def download_voice_preview(
+    voice: str,
+    text: str = "Hello! This is how I sound. Perfect for your YouTube Shorts.",
+    current_user = Depends(get_current_user)
+) -> FileResponse:
+    """
+    Download voice preview audio file.
+    
+    Args:
+        voice: Voice name
+        text: Preview text (must match the generated preview)
+        
+    Returns:
+        FileResponse with the audio file
+    """
+    try:
+        youtube_service = YouTubeService()
+        
+        # Generate the same preview audio with caching
+        audio_result = await youtube_service.tts_service.generate_voice_preview(
+            voice=voice,
+            custom_text=text if text != "Hello! This is how I sound. Perfect for your YouTube Shorts." else None,
+            use_cache=True
+        )
+        
+        if audio_result["status"] == "error":
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate preview audio"
+            )
+        
+        audio_path = audio_result["audio_path"]
+        
+        # Return file with proper headers for audio playback
+        return FileResponse(
+            path=audio_path,
+            media_type="audio/mpeg",
+            filename=f"voice_preview_{voice}.mp3",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to download preview: {str(e)}"
+        )
+
+
+@router.post("/voices/preview/custom")
+async def generate_custom_voice_preview(
+    voice: str,
+    custom_text: str,
+    current_user = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """
+    Generate voice preview with custom text from user's transcript.
+    
+    Args:
+        voice: Voice name to preview
+        custom_text: User's actual transcript text (first 100 characters)
+        
+    Returns:
+        Dict with preview information
+    """
+    try:
+        # Limit and clean the custom text
+        preview_text = custom_text.strip()[:100]
+        if len(preview_text) < 10:
+            preview_text = "Hello! This is how I sound with your content."
+        
+        # Add ellipsis if truncated
+        if len(custom_text) > 100:
+            preview_text += "..."
+        
+        # Generate preview
+        return await generate_voice_preview(voice, preview_text, current_user)
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate custom preview: {str(e)}"
+        )
+
+
+@router.delete("/voices/preview/cache")
+async def cleanup_voice_preview_cache(
+    max_age_hours: int = 48,
+    current_user = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """
+    Clean up old voice preview cache files.
+    
+    Args:
+        max_age_hours: Maximum age for cache files in hours (default: 48)
+        
+    Returns:
+        Dict with cleanup results
+    """
+    try:
+        youtube_service = YouTubeService()
+        
+        # Cleanup cache
+        cleanup_result = await youtube_service.tts_service.cleanup_cache(max_age_hours)
+        
+        return {
+            "status": "success",
+            "message": f"Cache cleanup completed",
+            "cleanup_result": cleanup_result
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to cleanup cache: {str(e)}"
+        )
+
+
+@router.get("/voices/preview/cache/info")
+async def get_voice_preview_cache_info(
+    current_user = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """
+    Get information about voice preview cache.
+    
+    Returns:
+        Dict with cache information
+    """
+    try:
+        youtube_service = YouTubeService()
+        cache_dir = youtube_service.tts_service.cache_dir
+        
+        if not cache_dir.exists():
+            return {
+                "status": "success",
+                "cache_exists": False,
+                "message": "No cache directory found"
+            }
+        
+        # Calculate cache statistics
+        cache_files = list(cache_dir.glob("*.mp3"))
+        total_files = len(cache_files)
+        total_size = sum(f.stat().st_size for f in cache_files if f.exists())
+        
+        # Get oldest and newest files
+        if cache_files:
+            file_ages = [(f, f.stat().st_mtime) for f in cache_files if f.exists()]
+            file_ages.sort(key=lambda x: x[1])
+            
+            import time
+            current_time = time.time()
+            oldest_age_hours = (current_time - file_ages[0][1]) / 3600 if file_ages else 0
+            newest_age_hours = (current_time - file_ages[-1][1]) / 3600 if file_ages else 0
+        else:
+            oldest_age_hours = 0
+            newest_age_hours = 0
+        
+        return {
+            "status": "success",
+            "cache_exists": True,
+            "cache_directory": str(cache_dir),
+            "total_files": total_files,
+            "total_size_bytes": total_size,
+            "total_size_mb": round(total_size / (1024 * 1024), 2),
+            "oldest_file_age_hours": round(oldest_age_hours, 2),
+            "newest_file_age_hours": round(newest_age_hours, 2),
+            "recommended_cleanup": oldest_age_hours > 24
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get cache info: {str(e)}"
         ) 
