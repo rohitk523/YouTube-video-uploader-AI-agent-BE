@@ -14,12 +14,12 @@ from app.config import get_settings
 
 settings = get_settings()
 
-# Import Langfuse if configured
-_langfuse_client = None
+# Initialize Langfuse with environment variables
+langfuse = None
 if settings.langfuse_configured:
     try:
         from langfuse import Langfuse
-        _langfuse_client = Langfuse(
+        langfuse = Langfuse(
             secret_key=settings.langfuse_secret_key,
             public_key=settings.langfuse_public_key,
             host=settings.langfuse_host
@@ -39,7 +39,9 @@ class AITranscriptService:
             raise ValueError("OpenAI API key is required for AI transcript generation")
         
         self.client = AsyncOpenAI(api_key=settings.openai_api_key)
-        self.langfuse = _langfuse_client
+        self.langfuse = langfuse
+        
+        # Set up prompt file path
         self.prompt_file_path = Path(__file__).parent.parent.parent / "prompts" / "transcript_generation.txt"
         
         # Default model settings
@@ -48,31 +50,56 @@ class AITranscriptService:
         self.max_tokens = 500
         self.temperature = 0.7
         
-    async def _load_prompt_template(self) -> str:
+    async def _load_prompt_from_langfuse(self) -> str:
         """
-        Load the prompt template from file.
+        Load the prompt template from Langfuse prompt management.
+        Falls back to file-based prompt, then hardcoded prompt if needed.
         
         Returns:
             Prompt template string
         """
         try:
-            if self.prompt_file_path.exists():
-                async with aiofiles.open(self.prompt_file_path, 'r', encoding='utf-8') as f:
-                    return await f.read()
+            if self.langfuse:
+                # Fetch the prompt from Langfuse
+                prompt_response = self.langfuse.get_prompt("transcript_generation")
+                if prompt_response and hasattr(prompt_response, 'prompt'):
+                    print("Successfully loaded prompt from Langfuse")
+                    return prompt_response.prompt
+                else:
+                    print("Warning: Prompt 'transcript_generation' not found in Langfuse, falling back to file/hardcoded prompt")
+                    return self._get_fallback_prompt()
             else:
-                # Fallback prompt if file doesn't exist
+                print("Warning: Langfuse not configured, falling back to file/hardcoded prompt")
                 return self._get_fallback_prompt()
         except Exception as e:
-            print(f"Warning: Failed to load prompt template: {e}")
+            print(f"Warning: Failed to load prompt from Langfuse: {e}, falling back to file/hardcoded prompt")
             return self._get_fallback_prompt()
     
     def _get_fallback_prompt(self) -> str:
         """
-        Get fallback prompt if file loading fails.
+        Get fallback prompt if Langfuse prompt loading fails.
+        Tries to read from transcript_generation.txt file first, then uses basic hardcoded prompt.
         
         Returns:
             Fallback prompt string
         """
+        try:
+            # Try to read from the prompt file
+            if self.prompt_file_path.exists():
+                with open(self.prompt_file_path, 'r', encoding='utf-8') as f:
+                    file_content = f.read().strip()
+                    if file_content:
+                        print(f"Using prompt from file: {self.prompt_file_path}")
+                        return file_content
+                    else:
+                        print(f"Warning: Prompt file is empty: {self.prompt_file_path}")
+            else:
+                print(f"Warning: Prompt file not found: {self.prompt_file_path}")
+        except Exception as e:
+            print(f"Warning: Failed to read prompt file {self.prompt_file_path}: {e}")
+        
+        # Last resort: basic hardcoded prompt
+        print("Using basic hardcoded fallback prompt")
         return """You are an expert YouTube Shorts script writer who creates engaging, viral content. 
         Create a compelling transcript for a YouTube Short based on the user's context.
         
@@ -111,24 +138,19 @@ class AITranscriptService:
                 "error_type": "validation_error"
             }
         
-        # Start Langfuse trace if available
-        trace = None
+        # Initialize tracing variables
+        trace_id = None
+        
         if self.langfuse:
             try:
-                trace = self.langfuse.trace(
-                    name="ai_transcript_generation",
-                    user_id=user_id,
-                    metadata={
-                        "context_length": len(context),
-                        "has_custom_instructions": bool(custom_instructions)
-                    }
-                )
+                # Create a unique trace ID
+                trace_id = self.langfuse.create_trace_id()
             except Exception as e:
-                print(f"Warning: Failed to create Langfuse trace: {e}")
+                print(f"Warning: Failed to create Langfuse trace ID: {e}")
         
         try:
-            # Load prompt template
-            prompt_template = await self._load_prompt_template()
+            # Load prompt template from Langfuse
+            prompt_template = await self._load_prompt_from_langfuse()
             
             # Format prompt with context
             formatted_prompt = prompt_template.format(context=context.strip())
@@ -137,55 +159,73 @@ class AITranscriptService:
             if custom_instructions:
                 formatted_prompt += f"\n\nAdditional Instructions: {custom_instructions}"
             
-            # Log the generation attempt
-            generation = None
-            if trace:
+            # Use Langfuse context manager for proper tracing
+            if self.langfuse:
                 try:
-                    generation = trace.generation(
-                        name="openai_transcript_generation",
+                    with self.langfuse.start_as_current_generation(
+                        name="ai_transcript_generation",
                         model=self.default_model,
                         input=formatted_prompt,
                         metadata={
+                            "user_id": user_id,
+                            "context_length": len(context),
+                            "has_custom_instructions": bool(custom_instructions),
                             "temperature": self.temperature,
                             "max_tokens": self.max_tokens
                         }
-                    )
-                except Exception as e:
-                    print(f"Warning: Failed to create Langfuse generation: {e}")
-            
-            # Try with primary model first
-            try:
-                response = await self._generate_with_model(
-                    prompt=formatted_prompt,
-                    model=self.default_model
-                )
-            except Exception as e:
-                print(f"Primary model failed, trying fallback: {e}")
-                # Fallback to secondary model
-                response = await self._generate_with_model(
-                    prompt=formatted_prompt,
-                    model=self.fallback_model
-                )
-            
-            transcript = response.choices[0].message.content.strip()
-            
-            # Calculate metrics
-            word_count = len(transcript.split())
-            estimated_duration = self._estimate_speaking_duration(transcript)
-            
-            # Log successful generation
-            if generation:
-                try:
-                    generation.end(
-                        output=transcript,
-                        usage={
-                            "prompt_tokens": response.usage.prompt_tokens,
-                            "completion_tokens": response.usage.completion_tokens,
-                            "total_tokens": response.usage.total_tokens
-                        }
-                    )
-                except Exception as e:
-                    print(f"Warning: Failed to end Langfuse generation: {e}")
+                    ) as generation:
+                        # Try with primary model first
+                        try:
+                            response = await self._generate_with_model(
+                                prompt=formatted_prompt,
+                                model=self.default_model
+                            )
+                        except Exception as e:
+                            print(f"Primary model failed, trying fallback: {e}")
+                            # Update metadata with fallback info
+                            generation.update(metadata={"fallback_used": True, "primary_error": str(e)})
+                            
+                            # Fallback to secondary model
+                            response = await self._generate_with_model(
+                                prompt=formatted_prompt,
+                                model=self.fallback_model
+                            )
+                        
+                        transcript = response.choices[0].message.content.strip()
+                        
+                        # Calculate metrics
+                        word_count = len(transcript.split())
+                        estimated_duration = self._estimate_speaking_duration(transcript)
+                        
+                        # End generation with output and usage
+                        generation.end(
+                            output=transcript,
+                            usage_details={
+                                "input": response.usage.prompt_tokens,
+                                "output": response.usage.completion_tokens,
+                                "total": response.usage.total_tokens
+                            },
+                            metadata={
+                                "word_count": word_count,
+                                "estimated_duration_seconds": estimated_duration,
+                                "model_used": response.model,
+                                "success": True
+                            }
+                        )
+                        
+                except Exception as langfuse_error:
+                    print(f"Warning: Langfuse tracing failed, continuing without tracing: {langfuse_error}")
+                    # Fall back to generation without tracing
+                    response = await self._generate_without_tracing(formatted_prompt)
+                    transcript = response.choices[0].message.content.strip()
+                    word_count = len(transcript.split())
+                    estimated_duration = self._estimate_speaking_duration(transcript)
+            else:
+                # Generate without tracing if Langfuse not available
+                response = await self._generate_without_tracing(formatted_prompt)
+                transcript = response.choices[0].message.content.strip()
+                word_count = len(transcript.split())
+                estimated_duration = self._estimate_speaking_duration(transcript)
             
             result = {
                 "status": "success",
@@ -198,43 +238,27 @@ class AITranscriptService:
                     "completion_tokens": response.usage.completion_tokens,
                     "total_tokens": response.usage.total_tokens
                 },
-                "context_provided": context[:100] + "..." if len(context) > 100 else context
+                "context_provided": context[:100] + "..." if len(context) > 100 else context,
+                "trace_id": trace_id  # Include trace ID for debugging
             }
             
-            # End trace successfully
-            if trace:
+            # Flush Langfuse to ensure data is sent
+            if self.langfuse:
                 try:
-                    trace.update(
-                        output=result,
-                        metadata={
-                            **result,
-                            "success": True
-                        }
-                    )
+                    self.langfuse.flush()
                 except Exception as e:
-                    print(f"Warning: Failed to update Langfuse trace: {e}")
+                    print(f"Warning: Failed to flush Langfuse: {e}")
             
             return result
             
         except Exception as e:
             error_message = f"Failed to generate transcript: {str(e)}"
             
-            # Log error to Langfuse
-            if trace:
-                try:
-                    trace.update(
-                        metadata={
-                            "error": error_message,
-                            "success": False
-                        }
-                    )
-                except Exception as langfuse_error:
-                    print(f"Warning: Failed to log error to Langfuse: {langfuse_error}")
-            
             return {
                 "status": "error",
                 "error_message": error_message,
-                "error_type": "generation_error"
+                "error_type": "generation_error",
+                "trace_id": trace_id
             }
     
     async def _generate_with_model(self, prompt: str, model: str):
@@ -353,4 +377,20 @@ class AITranscriptService:
             "fallback_model": self.fallback_model,
             "max_tokens": self.max_tokens,
             "temperature": self.temperature
-        } 
+        }
+    
+    async def _generate_without_tracing(self, prompt: str):
+        """
+        Generate transcript without Langfuse tracing.
+        
+        Args:
+            prompt: Formatted prompt
+            
+        Returns:
+            OpenAI response
+        """
+        try:
+            return await self._generate_with_model(prompt=prompt, model=self.default_model)
+        except Exception as e:
+            print(f"Primary model failed, trying fallback: {e}")
+            return await self._generate_with_model(prompt=prompt, model=self.fallback_model) 
