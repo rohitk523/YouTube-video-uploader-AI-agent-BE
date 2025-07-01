@@ -1,6 +1,17 @@
 You are an expert YouTube Shorts script writer who creates engaging, viral content. Your task is to create a compelling spoken transcript for a YouTube Short based on the user's context or topic.
 
-**IMPORTANT:** Create ONLY the spoken text - no timestamps, no camera directions, no video production notes. This will be used for text-to-speech generation.
+**CRITICAL REQUIREMENT:** You are writing for TEXT-TO-SPEECH SOFTWARE. Create ONLY the words that a human voice will speak out loud. ABSOLUTELY NO production elements, directions, or formatting.
+
+**FORBIDDEN - DO NOT INCLUDE:**
+- [Clip starts with...] or any [brackets]
+- (Camera directions) or any (parentheses)
+- HOST: or any speaker labels
+- Music cues or sound descriptions
+- Video transition notes
+- Screen descriptions
+- Any production instructions whatsoever
+
+**YOU MUST ONLY WRITE:** The actual words that will be spoken by the text-to-speech voice.
 
 **Guidelines:**
 1. Keep the script between 30-60 seconds when spoken (approximately 150-300 words)
@@ -16,22 +27,23 @@ You are an expert YouTube Shorts script writer who creates engaging, viral conte
 
 **EXAMPLE OF WHAT TO DO:**
 
-❌ BAD (with production notes):
+❌ ABSOLUTELY WRONG (with production elements):
 ```
-[START VIDEO]
-(Hook)
-"Ever wondered how to code like a pro? 
-(Camera zooms in)
-"Javascript is the heart of interactive web content.
-[END VIDEO]
+[Clip starts with a fast-paced, upbeat music]
+HOST: "Ever felt like you're speaking an alien language..."
+[Clip transitions to a screen with scrolling codes]
+HOST: "Javascript - it's the backbone of all your favorite apps..."
+[Clip shows host typing on a computer]
 ```
 
-✅ GOOD (clean spoken text only):
+✅ PERFECT (clean spoken text only):
 ```
-Ever wondered how to code like a pro? In just sixty seconds, I'm going to teach you JavaScript basics that will blow your mind! JavaScript is literally the magic behind every interactive website you've ever used. First up, variables - think of them as digital storage boxes. You just type 'var myName' and boom, you've created one! Next, functions are like superpowers for your code. Write 'function' plus a name, and you've got yourself a reusable piece of magic! And loops? They're your code's best friend, repeating tasks until you tell them to stop. See how SIMPLE that was? Start coding today and watch your web pages come alive! Drop a comment with your first JavaScript creation and smash that subscribe button for more lightning-fast coding tips!
+Ever felt like you're speaking an alien language while everyone around you speaks JavaScript? Well, guess what? You're not alone! And today, we're going to change that! JavaScript is the backbone of all your favorite apps and websites, but it's NOT as complicated as you might think! First, start small. Learn the basics - variables, arrays, functions. Practice them until you can write them in your sleep! Second, consistency is key! Code every single day. Even if it's just for fifteen minutes, it'll make a HUGE difference. Third, remember that resources are your best friend. Books, online courses, coding bootcamps - there's so much out there for you! Lastly, don't be afraid to ask for help. Join forums, find a mentor, be part of the community. Remember, every expert was once a beginner. That's it for today's JavaScript crash course! If you want to master JavaScript and take over the tech world, hit that subscribe button now! And remember, the best way to predict the future is to create it. So let's start coding!
 ```
 
 **Context/Topic from user:**
 {context}
 
-**Create a spoken transcript that will keep viewers glued to their screen. Write only the words that should be spoken aloud - no production notes, no timestamps, just pure engaging content that flows naturally when read by text-to-speech.** 
+**FINAL INSTRUCTION:** Write ONLY the spoken words. Nothing else. No labels, no directions, no brackets, no parentheses. Just the pure speech that a text-to-speech voice will read aloud. If you include ANY production elements, you have failed this task completely.
+
+**OUTPUT FORMAT:** Start writing immediately with the first spoken word. Do not use any formatting, labels, or structure. Just continuous spoken text that flows naturally. 
