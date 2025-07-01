@@ -24,12 +24,12 @@ if settings.langfuse_configured:
     try:
         from langfuse import Langfuse
         
-        # Initialize with disabled features to avoid OpenTelemetry issues
+        # Initialize with disabled tracing to avoid OpenTelemetry issues
         langfuse = Langfuse(
             secret_key=settings.langfuse_secret_key,
             public_key=settings.langfuse_public_key,
             host=settings.langfuse_host,
-            enable_observability=False,  # Disable OpenTelemetry to prevent 500 errors
+            tracing_enabled=False,  # Disable tracing to prevent 500 errors
             flush_at=1,  # Reduce batching
             flush_interval=1.0  # Flush more frequently
         )
@@ -53,8 +53,29 @@ class AITranscriptService:
         self.client = AsyncOpenAI(api_key=settings.openai_api_key)
         self.langfuse = langfuse
         
-        # Set up prompt file path
-        self.prompt_file_path = Path(__file__).parent.parent.parent / "prompts" / "transcript_generation.txt"
+        # Set up prompt file path with fallback options
+        possible_paths = [
+            Path(__file__).parent.parent.parent / "prompts" / "transcript_generation.txt",  # Development
+            Path("/app/prompts/transcript_generation.txt"),  # Docker production
+            Path.cwd() / "prompts" / "transcript_generation.txt",  # Alternative production
+            Path("/app") / "prompts" / "transcript_generation.txt"  # Alternative Docker path
+        ]
+        
+        self.prompt_file_path = None
+        for path in possible_paths:
+            if path.exists():
+                self.prompt_file_path = path
+                logger.info(f"Found prompt file at: {path}")
+                break
+            else:
+                logger.debug(f"Prompt file not found at: {path}")
+        
+        # Default to first path if none found (for error reporting)
+        if self.prompt_file_path is None:
+            self.prompt_file_path = possible_paths[0]
+            logger.warning(f"No prompt file found. Checked paths: {[str(p) for p in possible_paths]}")
+            logger.info(f"Current working directory: {Path.cwd()}")
+            logger.info(f"__file__ location: {Path(__file__)}")
         
         # Log initialization status
         logger.info(f"AI Transcript Service initialized - Langfuse: {self.langfuse is not None}, Prompt file: {self.prompt_file_path.exists()}")
