@@ -12,7 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import get_current_user, verify_file_upload
 from app.database import get_db
 from app.models.user import User
-from app.schemas.upload import UploadResponse, TranscriptUpload
+from app.schemas.upload import (
+    UploadResponse, 
+    TranscriptUpload, 
+    AITranscriptRequest, 
+    AITranscriptResponse, 
+    AITranscriptValidation, 
+    AITranscriptServiceInfo
+)
 from app.schemas.video import VideoCreate
 from app.services.file_service import FileService
 from app.repositories.video_repository import VideoRepository
@@ -670,4 +677,114 @@ async def debug_aws_permissions(
     except Exception as e:
         results["error"] = f"Failed to initialize AWS client: {str(e)}"
     
-    return results 
+    return results
+
+
+# AI Transcript Generation Endpoints
+
+@router.post("/ai-transcript/generate", response_model=AITranscriptResponse)
+async def generate_ai_transcript(
+    request: AITranscriptRequest,
+    current_user: User = Depends(get_current_user)
+) -> AITranscriptResponse:
+    """
+    Generate AI-powered transcript for YouTube Shorts.
+    
+    Args:
+        request: AI transcript generation request
+        current_user: Current authenticated user
+        
+    Returns:
+        AITranscriptResponse: Generated transcript with metadata
+    """
+    from app.services.ai_transcript_service import AITranscriptService
+    
+    try:
+        # Initialize the AI transcript service
+        ai_service = AITranscriptService()
+        
+        # Generate transcript
+        result = await ai_service.generate_transcript(
+            context=request.context,
+            user_id=str(current_user.id),
+            custom_instructions=request.custom_instructions if request.custom_instructions else None
+        )
+        
+        return AITranscriptResponse(**result)
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate AI transcript: {str(e)}"
+        )
+
+
+@router.post("/ai-transcript/validate", response_model=AITranscriptValidation)
+async def validate_ai_transcript_context(
+    request: AITranscriptRequest,
+    current_user: User = Depends(get_current_user)
+) -> AITranscriptValidation:
+    """
+    Validate context for AI transcript generation.
+    
+    Args:
+        request: AI transcript generation request
+        current_user: Current authenticated user
+        
+    Returns:
+        AITranscriptValidation: Validation result
+    """
+    from app.services.ai_transcript_service import AITranscriptService
+    
+    try:
+        ai_service = AITranscriptService()
+        validation_result = await ai_service.validate_context(request.context)
+        
+        return AITranscriptValidation(**validation_result)
+        
+    except Exception as e:
+        return AITranscriptValidation(
+            valid=False,
+            error=f"Validation failed: {str(e)}"
+        )
+
+
+@router.get("/ai-transcript/service-info", response_model=AITranscriptServiceInfo)
+async def get_ai_transcript_service_info(
+    current_user: User = Depends(get_current_user)
+) -> AITranscriptServiceInfo:
+    """
+    Get AI transcript service information and status.
+    
+    Args:
+        current_user: Current authenticated user
+        
+    Returns:
+        AITranscriptServiceInfo: Service information
+    """
+    from app.services.ai_transcript_service import AITranscriptService
+    
+    try:
+        ai_service = AITranscriptService()
+        service_info = ai_service.get_service_info()
+        
+        return AITranscriptServiceInfo(**service_info)
+        
+    except Exception as e:
+        # Return basic info even if service fails to initialize
+        return AITranscriptServiceInfo(
+            service_name="AI Transcript Service",
+            openai_configured=bool(settings.openai_api_key),
+            langfuse_configured=settings.langfuse_configured,
+            langfuse_available=False,
+            prompt_file_exists=False,
+            default_model="gpt-4",
+            fallback_model="gpt-3.5-turbo",
+            max_tokens=500,
+            temperature=0.7
+        ) 

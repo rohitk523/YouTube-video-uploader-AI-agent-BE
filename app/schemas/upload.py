@@ -79,4 +79,58 @@ class ApiInfo(BaseModel):
         "youtube": "/api/v1/youtube",
         "health": "/api/v1/health",
         "docs": "/docs"
-    } 
+    }
+
+
+class AITranscriptRequest(BaseModel):
+    """Schema for AI transcript generation request."""
+    
+    context: str = Field(
+        ...,
+        min_length=10,
+        max_length=2000,
+        description="Context or topic for transcript generation"
+    )
+    custom_instructions: str = Field(
+        "",
+        max_length=500,
+        description="Additional instructions for the AI (optional)"
+    )
+
+
+class AITranscriptResponse(BaseModel):
+    """Schema for AI transcript generation response."""
+    
+    status: str
+    transcript: str = ""
+    word_count: int = 0
+    estimated_duration_seconds: float = 0.0
+    model_used: str = ""
+    tokens_used: dict = {}
+    context_provided: str = ""
+    error_message: str = ""
+    error_type: str = ""
+
+
+class AITranscriptValidation(BaseModel):
+    """Schema for AI transcript context validation."""
+    
+    valid: bool
+    character_count: int = 0
+    word_count: int = 0
+    estimated_tokens: int = 0
+    error: str = ""
+
+
+class AITranscriptServiceInfo(BaseModel):
+    """Schema for AI transcript service information."""
+    
+    service_name: str
+    openai_configured: bool
+    langfuse_configured: bool
+    langfuse_available: bool
+    prompt_file_exists: bool
+    default_model: str
+    fallback_model: str
+    max_tokens: int
+    temperature: float 

@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     openai_tts_model: str = "tts-1"
     openai_default_voice: str = "alloy"
     
+    # Langfuse for observability
+    langfuse_secret_key: Optional[str] = None
+    langfuse_public_key: Optional[str] = None
+    langfuse_host: str = "https://cloud.langfuse.com"
+    
     # Security
     secret_key: str = "your-secret-key-change-this-in-production"
     algorithm: str = "HS256"
@@ -140,6 +145,11 @@ class Settings(BaseSettings):
     def redis_configured(self) -> bool:
         """Check if Redis is properly configured."""
         return bool(self.redis_url)
+    
+    @property
+    def langfuse_configured(self) -> bool:
+        """Check if Langfuse is properly configured."""
+        return bool(self.langfuse_secret_key and self.langfuse_public_key)
 
     class Config:
         env_file = get_env_file()
