@@ -3,6 +3,7 @@ AI Transcript Generation service for creating YouTube Shorts scripts
 """
 
 import asyncio
+import logging
 import os
 from typing import Dict, Any, Optional
 from pathlib import Path
@@ -13,6 +14,9 @@ from openai import AsyncOpenAI
 from app.config import get_settings
 
 settings = get_settings()
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 # Initialize Langfuse with environment variables
 langfuse = None
@@ -25,9 +29,9 @@ if settings.langfuse_configured:
             host=settings.langfuse_host
         )
     except ImportError:
-        print("Warning: Langfuse not installed but configured. Install with: pip install langfuse")
+        logger.warning("Langfuse not installed but configured. Install with: pip install langfuse")
     except Exception as e:
-        print(f"Warning: Failed to initialize Langfuse: {e}")
+        logger.warning(f"Failed to initialize Langfuse: {e}")
 
 
 class AITranscriptService:
@@ -63,16 +67,16 @@ class AITranscriptService:
                 # Fetch the prompt from Langfuse
                 prompt_response = self.langfuse.get_prompt("transcript_generation")
                 if prompt_response and hasattr(prompt_response, 'prompt'):
-                    print("Successfully loaded prompt from Langfuse")
+                    logger.info("Successfully loaded prompt from Langfuse")
                     return prompt_response.prompt
                 else:
-                    print("Warning: Prompt 'transcript_generation' not found in Langfuse, falling back to file/hardcoded prompt")
+                    logger.warning("Prompt 'transcript_generation' not found in Langfuse, falling back to file/hardcoded prompt")
                     return self._get_fallback_prompt()
             else:
-                print("Warning: Langfuse not configured, falling back to file/hardcoded prompt")
+                logger.info("Langfuse not configured, using file/hardcoded prompt fallback")
                 return self._get_fallback_prompt()
         except Exception as e:
-            print(f"Warning: Failed to load prompt from Langfuse: {e}, falling back to file/hardcoded prompt")
+            logger.warning(f"Failed to load prompt from Langfuse: {e}, falling back to file/hardcoded prompt")
             return self._get_fallback_prompt()
     
     def _get_fallback_prompt(self) -> str:
@@ -89,17 +93,17 @@ class AITranscriptService:
                 with open(self.prompt_file_path, 'r', encoding='utf-8') as f:
                     file_content = f.read().strip()
                     if file_content:
-                        print(f"Using prompt from file: {self.prompt_file_path}")
+                        logger.info(f"Using prompt from file: {self.prompt_file_path}")
                         return file_content
                     else:
-                        print(f"Warning: Prompt file is empty: {self.prompt_file_path}")
+                        logger.warning(f"Prompt file is empty: {self.prompt_file_path}")
             else:
-                print(f"Warning: Prompt file not found: {self.prompt_file_path}")
+                logger.warning(f"Prompt file not found: {self.prompt_file_path}")
         except Exception as e:
-            print(f"Warning: Failed to read prompt file {self.prompt_file_path}: {e}")
+            logger.warning(f"Failed to read prompt file {self.prompt_file_path}: {e}")
         
         # Last resort: basic hardcoded prompt
-        print("Using basic hardcoded fallback prompt")
+        logger.info("Using basic hardcoded fallback prompt")
         return """You are an expert YouTube Shorts script writer who creates engaging, viral content. 
         Create a compelling transcript for a YouTube Short based on the user's context.
         
@@ -146,7 +150,7 @@ class AITranscriptService:
                 # Create a unique trace ID
                 trace_id = self.langfuse.create_trace_id()
             except Exception as e:
-                print(f"Warning: Failed to create Langfuse trace ID: {e}")
+                logger.warning(f"Failed to create Langfuse trace ID: {e}")
         
         try:
             # Load prompt template from Langfuse
@@ -181,7 +185,7 @@ class AITranscriptService:
                                 model=self.default_model
                             )
                         except Exception as e:
-                            print(f"Primary model failed, trying fallback: {e}")
+                            logger.warning(f"Primary model failed, trying fallback: {e}")
                             # Update metadata with fallback info
                             generation.update(metadata={"fallback_used": True, "primary_error": str(e)})
                             
@@ -214,7 +218,7 @@ class AITranscriptService:
                         )
                         
                 except Exception as langfuse_error:
-                    print(f"Warning: Langfuse tracing failed, continuing without tracing: {langfuse_error}")
+                    logger.warning(f"Langfuse tracing failed, continuing without tracing: {langfuse_error}")
                     # Fall back to generation without tracing
                     response = await self._generate_without_tracing(formatted_prompt)
                     transcript = response.choices[0].message.content.strip()
@@ -247,7 +251,7 @@ class AITranscriptService:
                 try:
                     self.langfuse.flush()
                 except Exception as e:
-                    print(f"Warning: Failed to flush Langfuse: {e}")
+                    logger.warning(f"Failed to flush Langfuse: {e}")
             
             return result
             
@@ -392,5 +396,5 @@ class AITranscriptService:
         try:
             return await self._generate_with_model(prompt=prompt, model=self.default_model)
         except Exception as e:
-            print(f"Primary model failed, trying fallback: {e}")
+            logger.warning(f"Primary model failed, trying fallback: {e}")
             return await self._generate_with_model(prompt=prompt, model=self.fallback_model) 
