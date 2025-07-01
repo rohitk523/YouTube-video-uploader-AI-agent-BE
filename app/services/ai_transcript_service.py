@@ -29,7 +29,7 @@ if settings.langfuse_configured:
             secret_key=settings.langfuse_secret_key,
             public_key=settings.langfuse_public_key,
             host=settings.langfuse_host,
-            tracing_enabled=True,  # Disable tracing to prevent 500 errors
+            tracing_enabled=True,  # Enable tracing (may cause some 500 errors but provides better observability)
             flush_at=1,  # Reduce batching
             flush_interval=1.0  # Flush more frequently
         )
@@ -53,29 +53,35 @@ class AITranscriptService:
         self.client = AsyncOpenAI(api_key=settings.openai_api_key)
         self.langfuse = langfuse
         
-        # Set up prompt file path with fallback options
+        # Set up prompt file path with fallback options  
         possible_paths = [
             Path(__file__).parent.parent.parent / "prompts" / "transcript_generation.txt",  # Development
+            Path.cwd() / "prompts" / "transcript_generation.txt",  # Current directory
             Path("/app/prompts/transcript_generation.txt"),  # Docker production
-            Path.cwd() / "prompts" / "transcript_generation.txt",  # Alternative production
-            Path("/app") / "prompts" / "transcript_generation.txt"  # Alternative Docker path
         ]
         
-        self.prompt_file_path = None
+        # Remove duplicates while preserving order
+        unique_paths = []
         for path in possible_paths:
+            abs_path = path.resolve()
+            if abs_path not in [p.resolve() for p in unique_paths]:
+                unique_paths.append(path)
+        
+        self.prompt_file_path = None
+        for path in unique_paths:
             if path.exists():
                 self.prompt_file_path = path
                 logger.info(f"Found prompt file at: {path}")
                 break
-            else:
-                logger.debug(f"Prompt file not found at: {path}")
         
         # Default to first path if none found (for error reporting)
         if self.prompt_file_path is None:
-            self.prompt_file_path = possible_paths[0]
-            logger.warning(f"No prompt file found. Checked paths: {[str(p) for p in possible_paths]}")
-            logger.info(f"Current working directory: {Path.cwd()}")
-            logger.info(f"__file__ location: {Path(__file__)}")
+            self.prompt_file_path = unique_paths[0]
+            # Only log file warning if Langfuse is not available
+            if not self.langfuse:
+                logger.warning(f"No prompt file found. Checked: {[str(p) for p in unique_paths]}")
+            else:
+                logger.debug(f"Prompt file not found, but Langfuse is available: {[str(p) for p in unique_paths]}")
         
         # Log initialization status
         logger.info(f"AI Transcript Service initialized - Langfuse: {self.langfuse is not None}, Prompt file: {self.prompt_file_path.exists()}")
