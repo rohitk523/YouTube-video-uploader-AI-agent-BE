@@ -769,4 +769,54 @@ async def get_sync_status(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error getting sync status: {str(e)}"
+        )
+
+
+@router.get("/user-s3-videos", response_model=Dict[str, Any])
+async def get_user_s3_videos(
+    job_id: UUID = Query(None, description="Filter by specific job ID"),
+    limit: int = Query(20, ge=1, le=100, description="Maximum number of videos to return"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Get user's videos from S3 with proper user separation.
+    
+    Args:
+        job_id: Optional job ID to filter videos by specific job
+        limit: Maximum number of videos to return (max 100)
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        Dict with user's videos and metadata
+        
+    Raises:
+        HTTPException: If error occurs during retrieval
+    """
+    try:
+        from app.services.s3_service import S3Service
+        s3_service = S3Service()
+        
+        # Get videos for the current user
+        videos = await s3_service.list_user_videos(
+            user_id=current_user.id,
+            job_id=job_id,
+            limit=limit
+        )
+        
+        return {
+            "status": "success",
+            "user_id": str(current_user.id),
+            "videos": videos,
+            "video_count": len(videos),
+            "filtered_by_job": str(job_id) if job_id else None,
+            "folder_structure": f"{current_user.id}/{job_id}/" if job_id else f"{current_user.id}/",
+            "limit": limit
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching user videos: {str(e)}"
         ) 

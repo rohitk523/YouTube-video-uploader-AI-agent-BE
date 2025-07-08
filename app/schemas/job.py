@@ -32,6 +32,14 @@ class JobCreate(BaseModel):
         description="Direct transcript content (alternative to transcript_upload_id)"
     )
     
+    # Backward compatibility field - will be mapped to transcript_content
+    transcript_text: Optional[str] = Field(
+        None, 
+        min_length=1, 
+        max_length=10000, 
+        description="Legacy field name for transcript content (mapped to transcript_content)"
+    )
+    
     # Mock mode flag
     mock_mode: bool = Field(
         False, 
@@ -64,6 +72,10 @@ class JobCreate(BaseModel):
         
         if self.video_upload_id and self.s3_video_id:
             raise ValueError("Provide either video_upload_id or s3_video_id, not both")
+        
+        # Handle backward compatibility: map transcript_text to transcript_content
+        if self.transcript_text and not self.transcript_content:
+            self.transcript_content = self.transcript_text
         
         # Validate transcript source
         if not self.transcript_upload_id and not self.transcript_content:

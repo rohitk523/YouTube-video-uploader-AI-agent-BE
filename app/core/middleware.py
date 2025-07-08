@@ -45,9 +45,24 @@ def add_security_middleware(app: FastAPI) -> None:
         app: FastAPI application instance
     """
     # Add trusted host middleware
+    if settings.debug:
+        # In debug mode, allow all hosts
+        allowed_hosts = ["*"]
+    else:
+        # In production, allow specific hosts
+        allowed_hosts = [
+            "yourdomain.com", 
+            "localhost", 
+            "127.0.0.1", 
+            "127.0.0.1:8000",
+            "localhost:8000",
+            "0.0.0.0",
+            "0.0.0.0:8000"
+        ]
+    
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=["*"] if settings.debug else ["yourdomain.com", "localhost"]
+        allowed_hosts=allowed_hosts
     )
 
 

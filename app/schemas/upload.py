@@ -110,6 +110,8 @@ class AITranscriptResponse(BaseModel):
     context_provided: str = ""
     error_message: str = ""
     error_type: str = ""
+    
+    model_config = {"protected_namespaces": ()}
 
 
 class AITranscriptValidation(BaseModel):

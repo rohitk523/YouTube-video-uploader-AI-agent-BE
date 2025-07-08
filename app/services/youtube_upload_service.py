@@ -7,19 +7,29 @@ import json
 import os
 from typing import Dict, Any, List, Optional
 from pathlib import Path
+import tempfile
+import logging
 
 from app.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 class YouTubeUploadService:
     """Service for uploading videos to YouTube using YouTube Data API v3."""
     
-    def __init__(self):
-        """Initialize YouTube upload service."""
-        self.api_key = getattr(settings, 'youtube_api_key', None)
-        self.client_secrets_file = getattr(settings, 'youtube_client_secrets_file', None)
+    def __init__(self, user_id: Optional[str] = None, secret_service=None):
+        """
+        Initialize YouTube upload service with user-specific authentication.
+        
+        Args:
+            user_id: User ID for credential lookup
+            secret_service: SecretService instance for token management
+        """
+        self.user_id = user_id
+        self.secret_service = secret_service
+        self.api_key = None
         self.max_retries = 3
         self.supported_categories = {
             "film": "1",
@@ -38,6 +48,91 @@ class YouTubeUploadService:
             "science": "28",
             "nonprofits": "29"
         }
+    
+    async def get_oauth_authorization_url(self, user_id: str) -> Dict[str, Any]:
+        """
+        Get YouTube OAuth authorization URL for user authentication.
+        
+        Args:
+            user_id: User ID for credential lookup
+            
+        Returns:
+            Dict containing authorization_url and state
+        """
+        if not self.secret_service:
+            raise Exception("SecretService not initialized")
+        
+        try:
+            from uuid import UUID
+            
+            # Convert string user_id to UUID if needed
+            if isinstance(user_id, str):
+                user_uuid = UUID(user_id)
+            else:
+                user_uuid = user_id
+            
+            # Use the secret service OAuth initialization
+            oauth_response = await self.secret_service.initiate_youtube_oauth(
+                user_id=user_uuid,
+                scopes=[
+                    "https://www.googleapis.com/auth/youtube.upload",
+                    "https://www.googleapis.com/auth/youtube"
+                ]
+            )
+            
+            return {
+                "authorization_url": oauth_response.authorization_url,
+                "state": oauth_response.state
+            }
+            
+        except Exception as e:
+            raise Exception(f"Failed to get OAuth authorization URL: {str(e)}")
+
+    async def handle_oauth_callback(self, user_id: str, authorization_code: str, state: str) -> Dict[str, Any]:
+        """
+        Handle OAuth callback and store tokens.
+        
+        Args:
+            user_id: User ID
+            authorization_code: Authorization code from OAuth callback
+            state: State parameter from OAuth callback
+            
+        Returns:
+            Dict with callback result
+        """
+        if not self.secret_service:
+            raise Exception("SecretService not initialized")
+        
+        try:
+            from uuid import UUID
+            
+            # Convert string user_id to UUID if needed
+            if isinstance(user_id, str):
+                user_uuid = UUID(user_id)
+            else:
+                user_uuid = user_id
+            
+            # Use the secret service OAuth callback handling
+            callback_response = await self.secret_service.handle_youtube_oauth_callback(
+                user_id=user_uuid,
+                code=authorization_code,
+                state=state
+            )
+            
+            return {
+                "authenticated": callback_response.success,
+                "message": callback_response.message,
+                "channel_info": {
+                    "authenticated": callback_response.youtube_authenticated,
+                    "scopes": callback_response.scopes_granted
+                }
+            }
+            
+        except Exception as e:
+            return {
+                "authenticated": False,
+                "message": f"OAuth callback failed: {str(e)}"
+            }
     
     async def upload_video_to_youtube(
         self,
@@ -78,12 +173,9 @@ class YouTubeUploadService:
                     "error_message": validation_result["error"]
                 }
             
-            # Check if YouTube credentials are configured
-            if not self.client_secrets_file:
-                raise Exception("YouTube client secrets file not configured. Set YOUTUBE_CLIENT_SECRETS_FILE environment variable.")
-            
-            if not os.path.exists(self.client_secrets_file):
-                raise Exception(f"YouTube client secrets file not found: {self.client_secrets_file}")
+            # Check if user authentication is available
+            if not self.user_id or not self.secret_service:
+                raise Exception("User authentication not configured. YouTube upload requires authenticated user.")
             
             # Perform real YouTube upload
             return await self._perform_youtube_upload(
@@ -91,10 +183,20 @@ class YouTubeUploadService:
             )
             
         except Exception as e:
-            return {
-                "status": "error",
-                "error_message": f"YouTube upload failed: {str(e)}"
-            }
+            # Improve error logging and avoid nested error messages
+            error_msg = str(e)
+            
+            # Don't wrap already detailed error messages
+            if "YouTube API" in error_msg or "authentication failed" in error_msg.lower():
+                return {
+                    "status": "error",
+                    "error_message": error_msg
+                }
+            else:
+                return {
+                    "status": "error",
+                    "error_message": f"YouTube upload failed: {error_msg}"
+                }
     
     async def _perform_youtube_upload(
         self,
@@ -113,22 +215,25 @@ class YouTubeUploadService:
             # Import Google API client libraries
             from googleapiclient.discovery import build
             from googleapiclient.http import MediaFileUpload
-            from google_auth_oauthlib.flow import InstalledAppFlow
-            from google.auth.transport.requests import Request
-            from google.oauth2.credentials import Credentials
-            import pickle
+            from googleapiclient.errors import HttpError
             
-            # OAuth 2.0 scopes
-            SCOPES = [
-                'https://www.googleapis.com/auth/youtube.upload',
-                'https://www.googleapis.com/auth/youtube'
-            ]
+            logger.info(f"Starting YouTube upload for user {self.user_id}")
             
-            # Authenticate and build YouTube service
-            credentials = await self._authenticate_youtube(SCOPES)
+            # Get authenticated YouTube credentials with automatic refresh
+            logger.info("Retrieving YouTube credentials...")
+            credentials = await self.secret_service.get_youtube_credentials(
+                user_id=self.user_id,
+                auto_refresh=True
+            )
+            logger.info("YouTube credentials retrieved successfully")
+            
+            # Build YouTube service
+            logger.info("Building YouTube service...")
             youtube = build('youtube', 'v3', credentials=credentials)
+            logger.info("YouTube service built successfully")
             
             # Prepare video metadata
+            logger.info(f"Preparing video metadata - Title: {title}, Category: {category}, Privacy: {privacy}")
             body = {
                 'snippet': {
                     'title': title,
@@ -146,21 +251,25 @@ class YouTubeUploadService:
             }
             
             # Create media upload object
+            logger.info(f"Creating media upload object for file: {video_path}")
             media = MediaFileUpload(
                 video_path, 
                 chunksize=-1, 
                 resumable=True,
                 mimetype='video/mp4'
             )
+            logger.info("Media upload object created successfully")
             
             # Execute upload
+            logger.info("Starting YouTube API upload request...")
             insert_request = youtube.videos().insert(
                 part=','.join(body.keys()),
                 body=body,
                 media_body=media
             )
+            logger.info("Upload request created, starting upload process...")
             
-            # Handle resumable upload
+            # Handle resumable upload with proper error handling
             response = None
             error = None
             retry = 0
@@ -169,15 +278,53 @@ class YouTubeUploadService:
                 try:
                     status, response = insert_request.next_chunk()
                     if status:
-                        print(f"Upload progress: {int(status.progress() * 100)}%")
-                except Exception as e:
-                    if retry < self.max_retries:
+                        logger.info(f"Upload progress: {int(status.progress() * 100)}%")
+                except HttpError as e:
+                    # Extract detailed error information from Google API
+                    error_details = []
+                    
+                    # Add status code and reason
+                    error_details.append(f"HTTP {e.resp.status}: {e.reason if hasattr(e, 'reason') else 'Unknown'}")
+                    
+                    # Try to extract more specific error from the response content
+                    try:
+                        import json
+                        if hasattr(e, 'content') and e.content:
+                            content = json.loads(e.content.decode('utf-8'))
+                            if 'error' in content:
+                                if 'message' in content['error']:
+                                    error_details.append(f"Message: {content['error']['message']}")
+                                if 'errors' in content['error']:
+                                    for err in content['error']['errors']:
+                                        if 'reason' in err:
+                                            error_details.append(f"Reason: {err['reason']}")
+                                        if 'message' in err:
+                                            error_details.append(f"Detail: {err['message']}")
+                    except:
+                        # If we can't parse the error content, continue with basic error
+                        pass
+                    
+                    detailed_error = " | ".join(error_details) if error_details else str(e)
+                    
+                    if e.resp.status in [401, 403]:
+                        # Authentication/authorization error - likely token issue
+                        raise Exception(f"YouTube API authentication failed: {detailed_error}. Please re-authenticate with YouTube.")
+                    elif e.resp.status in [500, 502, 503, 504] and retry < self.max_retries:
+                        # Recoverable server errors
                         retry += 1
-                        print(f"Upload error, retrying ({retry}/{self.max_retries}): {str(e)}")
+                        logger.warning(f"Server error {e.resp.status}, retrying ({retry}/{self.max_retries}): {detailed_error}")
                         await asyncio.sleep(2 ** retry)  # Exponential backoff
                         continue
                     else:
-                        raise e
+                        raise Exception(f"YouTube API error: {detailed_error}")
+                except Exception as e:
+                    if retry < self.max_retries:
+                        retry += 1
+                        logger.warning(f"Upload error, retrying ({retry}/{self.max_retries}): {str(e)}")
+                        await asyncio.sleep(2 ** retry)  # Exponential backoff
+                        continue
+                    else:
+                        raise Exception(f"Upload failed after {self.max_retries} retries: {str(e)}")
             
             if response is None:
                 raise Exception("Upload failed - no response received")
@@ -213,99 +360,88 @@ class YouTubeUploadService:
         except ImportError:
             raise Exception("Google API client library not installed. Run: pip install google-api-python-client google-auth google-auth-oauthlib")
         except Exception as e:
-            raise Exception(f"YouTube API upload failed: {str(e)}")
+            # Log the full error details for debugging
+            logger.error(f"YouTube upload failed for user {self.user_id}: {str(e)}")
+            logger.error(f"Error type: {type(e).__name__}")
+            logger.error(f"Error details: {repr(e)}")
+            
+            # Handle token refresh failures
+            if "invalid_grant" in str(e).lower() or "unauthorized" in str(e).lower():
+                raise Exception(f"YouTube authentication expired or invalid: {str(e)}. Please re-authenticate with YouTube.")
+            
+            # Don't wrap already detailed error messages
+            error_msg = str(e)
+            if "YouTube API" in error_msg or "authentication failed" in error_msg.lower():
+                raise Exception(error_msg)
+            else:
+                raise Exception(f"YouTube API upload failed: {error_msg}")
     
     async def _authenticate_youtube(self, scopes: List[str]):
         """
-        Authenticate with YouTube using OAuth 2.0.
+        DEPRECATED: Use SecretService.get_youtube_credentials() instead.
         
-        Args:
-            scopes: List of required OAuth scopes
-            
-        Returns:
-            Authenticated credentials object
+        This method is kept for backward compatibility but should not be used
+        in new code. The new authentication flow uses database-stored tokens
+        with automatic refresh.
         """
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        from google.auth.transport.requests import Request
-        from google.oauth2.credentials import Credentials
-        import pickle
-        import os
-        
-        creds = None
-        token_file = "youtube_token.pickle"
-        
-        # Load existing token if available
-        if os.path.exists(token_file):
-            with open(token_file, 'rb') as token:
-                creds = pickle.load(token)
-        
-        # If no valid credentials, get new ones
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                # Refresh expired token
-                creds.refresh(Request())
-            else:
-                # Run OAuth flow for new token
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    self.client_secrets_file, scopes
-                )
-                # Use port 8080 to match the redirect URIs in client secrets
-                creds = flow.run_local_server(port=8080, open_browser=True)
-            
-            # Save credentials for next run
-            with open(token_file, 'wb') as token:
-                pickle.dump(creds, token)
-        
-        return creds
+        raise Exception(
+            "File-based authentication is deprecated. "
+            "Use SecretService.get_youtube_credentials() for database-based token management."
+        )
     
     async def _validate_upload_params(
-        self,
-        title: str,
-        description: str,
-        tags: Optional[List[str]],
-        category: str,
+        self, 
+        title: str, 
+        description: str, 
+        tags: Optional[List[str]], 
+        category: str, 
         privacy: str
     ) -> Dict[str, Any]:
         """
-        Validate YouTube upload parameters.
+        Validate upload parameters.
         
+        Args:
+            title: Video title
+            description: Video description  
+            tags: Video tags
+            category: Video category
+            privacy: Privacy setting
+            
         Returns:
-            Dict with validation results
+            Dict with validation result
         """
-        issues = []
+        errors = []
         
         # Validate title
         if not title or not title.strip():
-            issues.append("Title is required")
+            errors.append("Title is required")
         elif len(title) > 100:
-            issues.append("Title must be 100 characters or less")
+            errors.append("Title must be 100 characters or less")
         
         # Validate description
-        if len(description) > 5000:
-            issues.append("Description must be 5000 characters or less")
+        if description and len(description) > 5000:
+            errors.append("Description must be 5000 characters or less")
         
         # Validate tags
         if tags:
             if len(tags) > 500:
-                issues.append("Maximum 500 tags allowed")
-            
+                errors.append("Maximum 500 tags allowed")
             for tag in tags:
                 if len(tag) > 500:
-                    issues.append(f"Tag too long: '{tag[:50]}...' (max 500 characters)")
+                    errors.append("Each tag must be 500 characters or less")
         
         # Validate category
         if category not in self.supported_categories:
-            issues.append(f"Invalid category: {category}. Supported: {list(self.supported_categories.keys())}")
+            errors.append(f"Invalid category. Supported: {list(self.supported_categories.keys())}")
         
         # Validate privacy
         valid_privacy = ["public", "unlisted", "private"]
         if privacy not in valid_privacy:
-            issues.append(f"Invalid privacy setting: {privacy}. Use: {valid_privacy}")
+            errors.append(f"Invalid privacy setting. Must be one of: {valid_privacy}")
         
         return {
-            "valid": len(issues) == 0,
-            "issues": issues,
-            "error": "; ".join(issues) if issues else None
+            "valid": len(errors) == 0,
+            "error": "; ".join(errors) if errors else None
         }
     
     def get_upload_guidelines(self) -> Dict[str, Any]:
@@ -313,44 +449,38 @@ class YouTubeUploadService:
         Get YouTube upload guidelines and requirements.
         
         Returns:
-            Dict with guidelines
+            Dict with upload guidelines
         """
         return {
             "file_requirements": {
-                "max_file_size": "256 GB",
-                "max_duration": "12 hours",
+                "max_file_size_gb": 256,
                 "supported_formats": [
-                    "MOV", "MPEG4", "MP4", "AVI", "WMV", "MPEGPS", 
-                    "FLV", "3GPP", "WebM", "DNxHR", "ProRes", "CineForm", "HEVC"
+                    ".mov", ".mpeg4", ".mp4", ".avi", ".wmv", ".mpegps", ".flv", ".3gpp", ".webm"
                 ],
-                "recommended_format": "MP4",
-                "recommended_codec": "H.264"
+                "recommended_format": ".mp4",
+                "max_duration_hours": 12,
+                "min_resolution": "426x240",
+                "max_resolution": "3840x2160",
+                "recommended_resolution": "1920x1080"
             },
-            "shorts_requirements": {
-                "max_duration": "60 seconds",
-                "aspect_ratio": "9:16 (vertical)",
-                "resolution": "1080x1920 (recommended)",
-                "title_suffix": "#Shorts (optional but recommended)"
+            "content_guidelines": {
+                "title_max_length": 100,
+                "description_max_length": 5000,
+                "tags_max_count": 500,
+                "tag_max_length": 500,
+                "thumbnail_formats": [".jpg", ".gif", ".png"],
+                "thumbnail_max_size_mb": 2,
+                "thumbnail_resolution": "1280x720"
             },
-            "metadata_limits": {
-                "title": "100 characters",
-                "description": "5000 characters", 
-                "tags": "500 total tags, 500 characters per tag",
-                "custom_thumbnail": "2MB max, 1280x720 recommended"
-            },
-            "content_policies": {
-                "community_guidelines": "https://www.youtube.com/howyoutubeworks/policies/community-guidelines/",
-                "copyright": "Must own or have rights to all content",
-                "monetization": "Follow monetization policies for revenue",
-                "age_restriction": "Properly classify content for appropriate audiences"
-            },
-            "privacy_options": {
-                "public": "Anyone can search for and view",
-                "unlisted": "Anyone with link can view",
-                "private": "Only you can view",
-                "scheduled": "Public at specified time"
-            },
-            "categories": self.supported_categories,
+            "privacy_options": [
+                {"value": "public", "label": "Public", "description": "Anyone can search for and view"},
+                {"value": "unlisted", "label": "Unlisted", "description": "Anyone with the link can view"},
+                {"value": "private", "label": "Private", "description": "Only you can view"}
+            ],
+            "categories": [
+                {"value": key, "label": key.title(), "id": value}
+                for key, value in self.supported_categories.items()
+            ],
             "optimization_tips": [
                 "Use relevant, searchable titles",
                 "Write detailed descriptions with keywords",
@@ -374,10 +504,15 @@ class YouTubeUploadService:
         try:
             from googleapiclient.discovery import build
             
-            # Authenticate and build YouTube service
-            credentials = await self._authenticate_youtube([
-                'https://www.googleapis.com/auth/youtube.readonly'
-            ])
+            if not self.user_id or not self.secret_service:
+                raise Exception("User authentication not configured")
+            
+            # Get authenticated credentials
+            credentials = await self.secret_service.get_youtube_credentials(
+                user_id=self.user_id,
+                auto_refresh=True
+            )
+            
             youtube = build('youtube', 'v3', credentials=credentials)
             
             # Get video details
@@ -403,20 +538,76 @@ class YouTubeUploadService:
                 "privacy_status": status.get('privacyStatus'),
                 "processing_status": processing.get('processingStatus'),
                 "processing_progress": processing.get('processingProgress'),
-                "failure_reason": status.get('failureReason'),
-                "rejection_reason": status.get('rejectionReason'),
-                "embeddable": status.get('embeddable'),
-                "license": status.get('license'),
-                "made_for_kids": status.get('selfDeclaredMadeForKids'),
-                "public_stats_viewable": status.get('publicStatsViewable')
+                "processing_failure_reason": processing.get('processingFailureReason'),
+                "processing_issues_availability": processing.get('processingIssuesAvailability'),
+                "tag_suggestions_availability": processing.get('tagSuggestionsAvailability'),
+                "editor_suggestions_availability": processing.get('editorSuggestionsAvailability'),
+                "thumbnail_availability": processing.get('thumbnailsAvailability')
             }
             
         except Exception as e:
             return {
-                "error": f"Failed to check video status: {str(e)}",
+                "error": f"Failed to check processing status: {str(e)}",
                 "video_id": video_id
             }
     
+    async def get_channel_info(self, user_id: str) -> Dict[str, Any]:
+        """
+        Get YouTube channel information for authenticated user.
+        
+        Args:
+            user_id: User ID for credential lookup
+            
+        Returns:
+            Dict with channel information
+        """
+        try:
+            from googleapiclient.discovery import build
+            
+            if not self.secret_service:
+                raise Exception("SecretService not initialized")
+            
+            # Get authenticated credentials
+            credentials = await self.secret_service.get_youtube_credentials(
+                user_id=user_id,
+                auto_refresh=True
+            )
+            
+            youtube = build('youtube', 'v3', credentials=credentials)
+            
+            # Get channel information
+            request = youtube.channels().list(
+                part="snippet,statistics",
+                mine=True
+            )
+            response = request.execute()
+            
+            if not response['items']:
+                return {
+                    "error": "No channel found for authenticated user"
+                }
+            
+            channel = response['items'][0]
+            snippet = channel.get('snippet', {})
+            stats = channel.get('statistics', {})
+            
+            return {
+                "id": channel.get('id'),
+                "title": snippet.get('title'),
+                "description": snippet.get('description'),
+                "custom_url": snippet.get('customUrl'),
+                "published_at": snippet.get('publishedAt'),
+                "thumbnail_url": snippet.get('thumbnails', {}).get('default', {}).get('url'),
+                "subscriber_count": int(stats.get('subscriberCount', 0)),
+                "video_count": int(stats.get('videoCount', 0)),
+                "view_count": int(stats.get('viewCount', 0))
+            }
+            
+        except Exception as e:
+            return {
+                "error": f"Failed to get channel info: {str(e)}"
+            }
+
     async def get_video_analytics(self, video_id: str, days: int = 7) -> Dict[str, Any]:
         """
         Get basic analytics for an uploaded video.
@@ -432,11 +623,15 @@ class YouTubeUploadService:
             from googleapiclient.discovery import build
             from datetime import datetime, timedelta
             
-            # Authenticate and build YouTube service
-            credentials = await self._authenticate_youtube([
-                'https://www.googleapis.com/auth/youtube.readonly',
-                'https://www.googleapis.com/auth/yt-analytics.readonly'
-            ])
+            if not self.user_id or not self.secret_service:
+                raise Exception("User authentication not configured")
+            
+            # Get authenticated credentials
+            credentials = await self.secret_service.get_youtube_credentials(
+                user_id=self.user_id,
+                auto_refresh=True
+            )
+            
             youtube = build('youtube', 'v3', credentials=credentials)
             
             # Get basic video statistics
@@ -458,16 +653,17 @@ class YouTubeUploadService:
             
             return {
                 "video_id": video_id,
-                "period_days": days,
-                "views": int(stats.get('viewCount', 0)),
-                "likes": int(stats.get('likeCount', 0)),
-                "comments": int(stats.get('commentCount', 0)),
-                "favorites": int(stats.get('favoriteCount', 0)),
                 "title": snippet.get('title'),
                 "published_at": snippet.get('publishedAt'),
-                "channel_title": snippet.get('channelTitle'),
+                "view_count": int(stats.get('viewCount', 0)),
+                "like_count": int(stats.get('likeCount', 0)),
+                "dislike_count": int(stats.get('dislikeCount', 0)),
+                "comment_count": int(stats.get('commentCount', 0)),
+                "favorite_count": int(stats.get('favoriteCount', 0)),
                 "duration": snippet.get('duration'),
-                "note": "Analytics data from YouTube Data API v3. For detailed analytics, use YouTube Analytics API."
+                "tags": snippet.get('tags', []),
+                "category_id": snippet.get('categoryId'),
+                "default_language": snippet.get('defaultLanguage')
             }
             
         except Exception as e:
@@ -511,20 +707,28 @@ class YouTubeUploadService:
                 },
                 {
                     "step": 5,
-                    "title": "Set Environment Variables",
-                    "description": "Set YOUTUBE_CLIENT_SECRETS_FILE path in your environment",
-                    "example": "YOUTUBE_CLIENT_SECRETS_FILE=/path/to/client_secrets.json"
+                    "title": "Upload Credentials",
+                    "description": "Upload the client_secrets.json file via the API",
+                    "endpoint": "/api/v1/secrets/upload"
                 },
                 {
                     "step": 6,
-                    "title": "Install Dependencies",
-                    "description": "Install Google API client library",
-                    "command": "pip install google-api-python-client google-auth google-auth-oauthlib"
+                    "title": "Complete OAuth Flow",
+                    "description": "Complete YouTube OAuth authentication",
+                    "endpoints": [
+                        "/api/v1/secrets/youtube/oauth/init",
+                        "/api/v1/secrets/youtube/oauth/callback"
+                    ]
                 }
             ],
-            "environment_variables": {
-                "YOUTUBE_CLIENT_SECRETS_FILE": "Path to OAuth2 client secrets JSON file",
-                "YOUTUBE_API_KEY": "YouTube Data API key (optional, for public data only)"
+            "authentication_flow": {
+                "description": "Database-based OAuth token management with automatic refresh",
+                "features": [
+                    "Encrypted token storage",
+                    "Automatic token refresh",
+                    "Per-user authentication",
+                    "Secure credential management"
+                ]
             },
             "scopes_required": [
                 "https://www.googleapis.com/auth/youtube.upload",

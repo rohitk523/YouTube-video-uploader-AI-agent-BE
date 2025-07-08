@@ -2,6 +2,7 @@
 Jobs API endpoints
 """
 
+import logging
 from typing import Dict, Any, Optional
 from uuid import UUID
 
@@ -16,6 +17,11 @@ from app.schemas.job import JobCreate, JobResponse, JobStatus, JobList
 from app.services.job_service import JobService
 from app.services.youtube_service import YouTubeService
 from app.services.file_service import FileService
+from app.services.secret_service import SecretService
+from app.services.video_service import VideoService
+
+# Configure logger for jobs API
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -42,27 +48,59 @@ async def create_job(
     Raises:
         HTTPException: If job creation fails
     """
+    logger.info(f"Starting job creation for user {current_user.id}")
+    logger.debug(f"Job data received: title='{job_data.title}', mock_mode={job_data.mock_mode}, "
+                f"has_transcript_content={bool(job_data.transcript_content)}, "
+                f"transcript_upload_id={job_data.transcript_upload_id}, "
+                f"video_upload_id={job_data.video_upload_id}")
+    
     job_service = JobService(db)
     
     try:
+        logger.info("Initializing JobService for job creation")
+        
+        # Validate job data before creation
+        logger.debug("Validating job creation data")
+        if not job_data.title or not job_data.title.strip():
+            logger.warning("Job creation failed: Missing or empty title")
+            raise ValueError("Job title is required and cannot be empty")
+        
+        if not job_data.video_upload_id:
+            logger.warning("Job creation failed: Missing video upload ID")
+            raise ValueError("Video upload ID is required")
+        
+        if not job_data.transcript_content and not job_data.transcript_upload_id:
+            logger.warning("Job creation failed: Neither transcript content nor transcript upload ID provided")
+            raise ValueError("Either transcript content or transcript upload ID is required")
+        
+        logger.info("Job data validation passed")
+        
         # Create job in database
+        logger.info("Creating job record in database")
         job_response = await job_service.create_job(job_data)
+        logger.info(f"Job created successfully with ID: {job_response.id}")
         
         # Start background processing
+        logger.info(f"Starting background processing for job {job_response.id}")
         background_tasks.add_task(
             process_youtube_short_background,
             job_response.id,
-            job_data
+            job_data,
+            current_user.id  # Pass the user ID to the background task
         )
+        logger.info(f"Background task scheduled for job {job_response.id}")
         
+        logger.info(f"Job creation completed successfully for user {current_user.id}, job_id: {job_response.id}")
         return job_response
         
     except ValueError as e:
+        logger.warning(f"Job creation validation error for user {current_user.id}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
     except Exception as e:
+        logger.error(f"Unexpected error during job creation for user {current_user.id}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create job: {str(e)}"
@@ -241,21 +279,39 @@ async def download_processed_video(
             detail="Processed video file not found. The file may have been cleaned up or processing failed."
         )
     
-    # Check if file exists
-    import os
-    if not os.path.exists(job.final_video_path):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Processed video file no longer exists on server. The file may have been cleaned up."
-        )
+    # Handle S3 URLs vs local file paths
+    video_path = job.final_video_path
+    temp_file_path = None
+    
+    if job.final_video_path.startswith("s3://"):
+        # Download from S3 to temp file
+        video_service = VideoService()
+        
+        download_result = await video_service.download_video_from_s3(job.final_video_path)
+        if download_result.get("status") != "success":
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to download video from S3: {download_result.get('error_message')}"
+            )
+        
+        video_path = download_result.get("local_path")
+        temp_file_path = video_path
+    else:
+        # Check if local file exists
+        import os
+        if not os.path.exists(job.final_video_path):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Processed video file no longer exists on server. The file may have been cleaned up."
+            )
     
     try:
         # Generate filename for download
         safe_title = "".join(c for c in job.title if c.isalnum() or c in (' ', '-', '_')).strip()
         filename = f"{safe_title}_processed.mp4" if safe_title else f"video_{job_id}_processed.mp4"
         
-        return FileResponse(
-            path=job.final_video_path,
+        response = FileResponse(
+            path=video_path,
             media_type="video/mp4",
             filename=filename,
             headers={
@@ -264,27 +320,67 @@ async def download_processed_video(
             }
         )
         
+        # Clean up temp file after response is sent if we downloaded from S3
+        if temp_file_path:
+            import os
+            try:
+                # Schedule cleanup after response is sent
+                import asyncio
+                asyncio.create_task(_cleanup_temp_file_later(temp_file_path))
+            except Exception as e:
+                print(f"Warning: Failed to schedule cleanup for temp file {temp_file_path}: {e}")
+        
+        return response
+        
     except Exception as e:
+        # Clean up temp file on error
+        if temp_file_path:
+            import os
+            try:
+                if os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
+            except Exception as cleanup_error:
+                print(f"Warning: Failed to cleanup temp file {temp_file_path}: {cleanup_error}")
+        
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to download video: {str(e)}"
         )
 
 
-async def process_youtube_short_background(job_id: UUID, job_data: JobCreate):
+async def _cleanup_temp_file_later(file_path: str):
+    """Clean up temp file after a delay."""
+    import asyncio
+    import os
+    
+    # Wait a bit to ensure the file is no longer being used
+    await asyncio.sleep(5)
+    
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+    except Exception as e:
+        print(f"Warning: Failed to cleanup temp file {file_path}: {e}")
+
+
+async def process_youtube_short_background(job_id: UUID, job_data: JobCreate, user_id: UUID):
     """
     Background task to process YouTube short creation.
     
     Args:
         job_id: Job UUID
         job_data: Job creation data
+        user_id: User UUID for credential lookup
     """
+    logger.info(f"Starting background processing for job {job_id}")
+    
     from app.database import AsyncSessionLocal
     
     async with AsyncSessionLocal() as db:
         job_service = JobService(db)
         
         try:
+            logger.info(f"Job {job_id}: Updating status to processing")
             # Update job status to processing
             await job_service.update_job_progress(
                 job_id, 0, "Starting processing...", "processing"
@@ -292,24 +388,50 @@ async def process_youtube_short_background(job_id: UUID, job_data: JobCreate):
             
             # Create progress callback
             async def progress_callback(jid: UUID, progress: int, message: str):
+                logger.debug(f"Job {jid}: Progress {progress}% - {message}")
                 await job_service.update_job_progress(jid, progress, message)
             
-            # Initialize YouTube service with progress callback
-            youtube_service = YouTubeService(progress_callback=progress_callback)
-            
             # Get job details for processing
+            logger.info(f"Job {job_id}: Fetching job details from database")
             job = await job_service.get_job_by_id(job_id)
             if not job:
+                logger.error(f"Job {job_id}: Job not found in database")
                 raise Exception("Job not found")
             
+            logger.info(f"Job {job_id}: Job details retrieved - title: '{job.title}'")
+            
+            # Fetch user credentials from secrets table using the passed user_id
+            logger.info(f"Job {job_id}: Fetching user credentials from secrets table for user {user_id}")
+            secret_service = SecretService(db)
+            credentials_dict = await secret_service.get_decrypted_credentials(user_id)
+            if not credentials_dict:
+                logger.error(f"Job {job_id}: No YouTube OAuth credentials found for user {user_id}")
+                raise Exception("No active YouTube OAuth credentials found for user. Please upload and verify your client_secret.json.")
+            
+            logger.info(f"Job {job_id}: YouTube credentials retrieved successfully")
+            
+            # Initialize YouTube service with progress callback and user authentication
+            logger.info(f"Job {job_id}: Initializing YouTube service")
+            youtube_service = YouTubeService(
+                progress_callback=progress_callback, 
+                user_id=user_id,
+                secret_service=secret_service
+            )
+            
             # Get video S3 URL for processing
+            logger.info(f"Job {job_id}: Retrieving video S3 URL")
             video_s3_url = await job_service.get_video_s3_url(job_id)
             if not video_s3_url:
+                logger.error(f"Job {job_id}: Video file not found or not accessible")
                 raise Exception("Video file not found or not accessible")
             
+            logger.info(f"Job {job_id}: Video S3 URL retrieved successfully")
+            
             # Get transcript content
+            logger.info(f"Job {job_id}: Processing transcript content")
             transcript_content = job_data.transcript_content
             if not transcript_content and job.transcript_upload_id:
+                logger.info(f"Job {job_id}: Downloading transcript from S3 (upload_id: {job.transcript_upload_id})")
                 # Download transcript from S3
                 try:
                     file_service = FileService(db)
@@ -317,24 +439,34 @@ async def process_youtube_short_background(job_id: UUID, job_data: JobCreate):
                     # Get the upload record to get S3 details
                     upload = await file_service.get_upload_by_id(job.transcript_upload_id)
                     if upload and upload.s3_key:
+                        logger.debug(f"Job {job_id}: Downloading transcript from S3 key: {upload.s3_key}")
                         # Download transcript content from S3
                         transcript_bytes = await file_service.s3_service.download_file(upload.s3_key)
                         transcript_content = transcript_bytes.decode('utf-8').strip()
                         
                         if not transcript_content:
+                            logger.error(f"Job {job_id}: Downloaded transcript file is empty")
                             raise Exception("Downloaded transcript file is empty")
+                        
+                        logger.info(f"Job {job_id}: Transcript downloaded successfully from S3")
                             
                     else:
+                        logger.error(f"Job {job_id}: Transcript upload record not found or invalid (upload_id: {job.transcript_upload_id})")
                         raise Exception("Transcript upload not found or invalid")
                     
                 except Exception as e:
+                    logger.error(f"Job {job_id}: Failed to download transcript from S3: {str(e)}", exc_info=True)
                     raise Exception(f"Failed to download transcript from S3: {str(e)}")
             
             # Ensure we have transcript content
             if not transcript_content:
+                logger.error(f"Job {job_id}: No transcript content available")
                 raise Exception("No transcript content available. Please provide transcript_content or upload a valid transcript file.")
             
+            logger.info(f"Job {job_id}: Transcript content ready (length: {len(transcript_content)} characters)")
+            
             # Process the YouTube short
+            logger.info(f"Job {job_id}: Starting YouTube short creation process")
             result = await youtube_service.create_youtube_short_async(
                 job_id=job_id,
                 video_path=video_s3_url,  # Use S3 URL instead of local path
@@ -346,11 +478,206 @@ async def process_youtube_short_background(job_id: UUID, job_data: JobCreate):
                 mock_mode=job_data.mock_mode
             )
             
+            logger.info(f"Job {job_id}: YouTube short creation completed successfully")
+            
             # Update job with completion results
+            logger.info(f"Job {job_id}: Updating job completion status in database")
             await job_service.update_job_completion(job_id, result)
             
+            logger.info(f"Job {job_id}: Background processing completed successfully")
+            
         except Exception as e:
+            logger.error(f"Job {job_id}: Background processing failed with error: {str(e)}", exc_info=True)
             # Update job with error
             await job_service.update_job_progress(
                 job_id, -1, f"Processing failed: {str(e)}", "failed"
             ) 
+
+
+@router.post("/create-with-structure", response_model=JobResponse)
+async def create_job_with_structure(
+    job_data: JobCreate,
+    background_tasks: BackgroundTasks,
+    custom_video_name: str = Query(None, description="Custom name for video file"),
+    custom_transcript_name: str = Query(None, description="Custom name for transcript file"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> JobResponse:
+    """
+    Create a new job with proper S3 folder structure and file organization.
+    
+    Args:
+        job_data: Job creation data
+        background_tasks: FastAPI background tasks
+        custom_video_name: Custom name for video file
+        custom_transcript_name: Custom name for transcript file
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        JobResponse: Created job information
+        
+    Raises:
+        HTTPException: If job creation fails
+    """
+    logger.info(f"Creating job with structure for user {current_user.id}")
+    
+    job_service = JobService(db)
+    
+    try:
+        # Validate job data
+        if not job_data.title or not job_data.title.strip():
+            raise ValueError("Job title is required and cannot be empty")
+        
+        if not job_data.video_upload_id:
+            raise ValueError("Video upload ID is required")
+        
+        if not job_data.transcript_content and not job_data.transcript_upload_id:
+            raise ValueError("Either transcript content or transcript upload ID is required")
+        
+        # Create job with folder structure
+        logger.info("Creating job with S3 folder structure")
+        job_response = await job_service.create_job_with_folder_structure(
+            job_data=job_data,
+            user_id=current_user.id
+        )
+        
+        # Move temporary files to job folder
+        if job_data.video_upload_id or job_data.transcript_upload_id:
+            logger.info(f"Moving temp files to job folder for job {job_response.id}")
+            move_result = await job_service.move_temp_files_to_job(
+                job_id=job_response.id,
+                user_id=current_user.id,
+                video_upload_id=job_data.video_upload_id,
+                transcript_upload_id=job_data.transcript_upload_id,
+                custom_video_name=custom_video_name,
+                custom_transcript_name=custom_transcript_name
+            )
+            
+            logger.info(f"File move result: {len(move_result['moved_files'])} files moved, {len(move_result['errors'])} errors")
+        
+        # Start background processing
+        logger.info(f"Starting background processing for job {job_response.id}")
+        background_tasks.add_task(
+            process_youtube_short_background,
+            job_response.id,
+            job_data,
+            current_user.id
+        )
+        
+        logger.info(f"Job with structure created successfully: {job_response.id}")
+        return job_response
+        
+    except ValueError as e:
+        logger.warning(f"Job creation validation error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error creating job with structure: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create job with structure: {str(e)}"
+        )
+
+
+@router.get("/user-jobs-with-files", response_model=Dict[str, Any])
+async def get_user_jobs_with_files(
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(10, ge=1, le=50, description="Items per page"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Get user's jobs with their associated files from S3.
+    
+    Args:
+        page: Page number (1-based)
+        page_size: Items per page
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        Dict with jobs and their files
+    """
+    logger.info(f"Getting jobs with files for user {current_user.id}")
+    
+    job_service = JobService(db)
+    
+    try:
+        result = await job_service.get_user_jobs_with_files(
+            user_id=current_user.id,
+            page=page,
+            page_size=page_size
+        )
+        
+        logger.info(f"Retrieved {len(result['jobs'])} jobs with files for user {current_user.id}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error getting user jobs with files: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get user jobs with files: {str(e)}"
+        )
+
+
+@router.post("/{job_id}/move-temp-files")
+async def move_temp_files_to_job(
+    job_id: UUID,
+    video_upload_id: UUID = Query(None, description="Video upload ID to move"),
+    transcript_upload_id: UUID = Query(None, description="Transcript upload ID to move"),
+    custom_video_name: str = Query(None, description="Custom name for video file"),
+    custom_transcript_name: str = Query(None, description="Custom name for transcript file"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Move temporary files to job folder structure.
+    
+    Args:
+        job_id: Job ID
+        video_upload_id: Video upload ID to move
+        transcript_upload_id: Transcript upload ID to move
+        custom_video_name: Custom name for video file
+        custom_transcript_name: Custom name for transcript file
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        Dict with move results
+    """
+    logger.info(f"Moving temp files to job {job_id} for user {current_user.id}")
+    
+    job_service = JobService(db)
+    
+    try:
+        # Verify job exists and belongs to user (basic security check)
+        job = await job_service.get_job_by_id(job_id)
+        if not job:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Job not found"
+            )
+        
+        result = await job_service.move_temp_files_to_job(
+            job_id=job_id,
+            user_id=current_user.id,
+            video_upload_id=video_upload_id,
+            transcript_upload_id=transcript_upload_id,
+            custom_video_name=custom_video_name,
+            custom_transcript_name=custom_transcript_name
+        )
+        
+        logger.info(f"File move completed: {len(result['moved_files'])} files moved, {len(result['errors'])} errors")
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error moving temp files: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to move temp files: {str(e)}"
+        ) 

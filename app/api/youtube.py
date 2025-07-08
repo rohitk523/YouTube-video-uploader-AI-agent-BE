@@ -2,20 +2,22 @@
 YouTube API endpoints
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status, Response, UploadFile, File, Form
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, status, Response, UploadFile, File, Form, Query, Body
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_current_user
-from app.database import get_db
+from app.core.dependencies import get_current_user, get_db
 from app.schemas.upload import SupportedVoices
 from app.schemas.job import JobCreate, JobResponse
 from app.services.job_service import JobService
 from app.services.youtube_service import YouTubeService
 from app.services.youtube_upload_service import YouTubeUploadService
+from app.models.user import User
+from app.services.video_service import VideoService
+# Video schemas removed - not needed for OAuth endpoints
 
 router = APIRouter()
 
@@ -350,12 +352,31 @@ async def upload_processed_video_to_youtube(
                 detail="No final video file found for this job"
             )
         
-        import os
-        if not os.path.exists(job.final_video_path):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Final video file no longer exists on server"
-            )
+        # Handle S3 URLs vs local file paths
+        video_path = job.final_video_path
+        temp_file_path = None
+        
+        if job.final_video_path.startswith("s3://"):
+            # Download from S3 to temp file
+            video_service = VideoService()
+            
+            download_result = await video_service.download_video_from_s3(job.final_video_path)
+            if download_result.get("status") != "success":
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to download video from S3: {download_result.get('error_message')}"
+                )
+            
+            video_path = download_result.get("local_path")
+            temp_file_path = video_path
+        else:
+            # Check if local file exists
+            import os
+            if not os.path.exists(job.final_video_path):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Final video file no longer exists on server"
+                )
         
         # Parse tags
         tag_list = [tag.strip() for tag in tags.split(",") if tag.strip()] if tags else []
@@ -363,7 +384,7 @@ async def upload_processed_video_to_youtube(
         # Upload to YouTube
         youtube_upload_service = YouTubeUploadService()
         upload_result = await youtube_upload_service.upload_video_to_youtube(
-            video_path=job.final_video_path,
+            video_path=video_path,
             title=title,
             description=description,
             tags=tag_list,
@@ -373,6 +394,15 @@ async def upload_processed_video_to_youtube(
         
         if upload_result["status"] == "error":
             raise Exception(upload_result["error_message"])
+        
+        # Clean up temp file if we downloaded from S3
+        if temp_file_path:
+            import os
+            try:
+                if os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
+            except Exception as e:
+                print(f"Warning: Failed to cleanup temp file {temp_file_path}: {e}")
         
         # Update job with YouTube info
         await job_service.update_job_progress(
@@ -661,4 +691,79 @@ async def get_voice_preview_cache_info(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get cache info: {str(e)}"
-        ) 
+        )
+
+
+@router.get("/auth-url")
+async def get_youtube_auth_url(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get YouTube OAuth authorization URL"""
+    from app.services.secret_service import SecretService
+    secret_service = SecretService(db)
+    youtube_service = YouTubeService(user_id=current_user.id, secret_service=secret_service)
+    try:
+        auth_data = await youtube_service.get_oauth_url(current_user.id)
+        return {
+            "auth_url": auth_data["auth_url"],
+            "state": auth_data["state"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/callback")
+async def youtube_oauth_callback(
+    code: str = Body(..., embed=True),
+    state: str = Body(..., embed=True),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Handle YouTube OAuth callback"""
+    from app.services.secret_service import SecretService
+    secret_service = SecretService(db)
+    youtube_service = YouTubeService(user_id=current_user.id, secret_service=secret_service)
+    try:
+        result = await youtube_service.handle_oauth_callback(
+            user_id=current_user.id,
+            code=code,
+            state=state
+        )
+        return {
+            "success": True,
+            "message": "YouTube authentication successful",
+            "authenticated": result["authenticated"]
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": str(e),
+            "authenticated": False
+        }
+
+
+@router.get("/auth-status")
+async def get_youtube_auth_status(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get YouTube authentication status"""
+    from app.services.secret_service import SecretService
+    secret_service = SecretService(db)
+    youtube_service = YouTubeService(user_id=current_user.id, secret_service=secret_service)
+    try:
+        status = await youtube_service.get_auth_status(current_user.id)
+        return {
+            "is_authenticated": status["is_authenticated"],
+            "channel_id": status.get("channel_id"),
+            "channel_title": status.get("channel_title"),
+            "authenticated_at": status.get("authenticated_at")
+        }
+    except Exception as e:
+        return {
+            "is_authenticated": False,
+            "channel_id": None,
+            "channel_title": None,
+            "authenticated_at": None
+        } 

@@ -64,8 +64,10 @@ class FileService:
         self, 
         file: UploadFile, 
         file_type: str,
+        user_id: Optional[UUID] = None,
         job_id: Optional[UUID] = None,
-        is_temp: bool = True
+        is_temp: bool = True,
+        custom_name: Optional[str] = None
     ) -> UploadResponse:
         """
         Save uploaded file to S3 and database.
@@ -73,8 +75,10 @@ class FileService:
         Args:
             file: Uploaded file
             file_type: Type of file (video/transcript)
+            user_id: User ID for organization
             job_id: Optional job ID to associate with upload
             is_temp: Whether this is a temporary file
+            custom_name: Optional custom name for the file
             
         Returns:
             UploadResponse: Upload information
@@ -94,7 +98,10 @@ class FileService:
                 file=file,
                 file_type=file_type,
                 upload_id=upload_id,
-                is_temp=is_temp
+                is_temp=is_temp,
+                user_id=user_id,
+                job_id=job_id,
+                custom_name=custom_name
             )
             
             # Create database record
@@ -121,7 +128,8 @@ class FileService:
                 original_filename=upload.original_filename,
                 file_type=upload.file_type,
                 file_size_mb=upload.file_size_mb,
-                upload_time=upload.upload_time
+                upload_time=upload.upload_time,
+                custom_name=custom_name
             )
             
         except HTTPException:
@@ -145,9 +153,11 @@ class FileService:
         self,
         content: str,
         upload_id: Optional[UUID] = None,
+        user_id: Optional[UUID] = None,
         job_id: Optional[UUID] = None,
         filename: str = "transcript.txt",
-        is_temp: bool = True
+        is_temp: bool = True,
+        custom_name: Optional[str] = None
     ) -> UploadResponse:
         """
         Save transcript text content to S3 and database.
@@ -155,9 +165,11 @@ class FileService:
         Args:
             content: Transcript text content
             upload_id: Optional specific upload ID to use
+            user_id: User ID for organization
             job_id: Optional job ID to associate with upload
             filename: Name for the transcript file
             is_temp: Whether this is a temporary file
+            custom_name: Optional custom name for the file
             
         Returns:
             UploadResponse: Upload information
@@ -175,7 +187,10 @@ class FileService:
                 content=content,
                 upload_id=upload_id,
                 filename=filename,
-                is_temp=is_temp
+                is_temp=is_temp,
+                user_id=user_id,
+                job_id=job_id,
+                custom_name=custom_name
             )
             
             # Create database record

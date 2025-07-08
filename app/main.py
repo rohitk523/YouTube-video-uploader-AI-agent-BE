@@ -3,11 +3,14 @@ Main FastAPI application for YouTube Shorts Creator
 """
 
 import logging
+import warnings
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.database import init_database, close_database
@@ -21,7 +24,8 @@ from app.core.dependencies import verify_upload_directory
 from app.schemas.upload import HealthCheck, ApiInfo
 
 # Import API routers
-from app.api import upload, jobs, youtube, oauth, videos
+from app.api import upload, jobs, youtube, oauth, videos, secrets
+from app.api.oauth_callback import router as oauth_callback_router
 
 settings = get_settings()
 
@@ -31,6 +35,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Suppress bcrypt warnings
+warnings.filterwarnings("ignore", message=".*bcrypt version.*", category=UserWarning)
 
 
 @asynccontextmanager
@@ -84,6 +91,43 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Add custom exception handlers
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Custom handler for request validation errors (422).
+    Logs the validation errors for debugging.
+    """
+    logger.warning(f"Request validation failed for {request.method} {request.url}")
+    logger.warning(f"Validation errors: {exc.errors()}")
+    
+    # Don't try to read request body as it may have been consumed
+    # The validation errors already contain the problematic input data
+    
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": "Request validation failed",
+            "errors": exc.errors()
+        }
+    )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """
+    Custom handler for HTTP exceptions.
+    Logs authentication and other HTTP errors.
+    """
+    if exc.status_code == 401:
+        logger.warning(f"Authentication failed for {request.method} {request.url}: {exc.detail}")
+    elif exc.status_code >= 400:
+        logger.warning(f"HTTP {exc.status_code} error for {request.method} {request.url}: {exc.detail}")
+    
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail}
+    )
+
 # Add middleware
 add_cors_middleware(app)
 add_security_middleware(app)
@@ -101,6 +145,10 @@ app.include_router(
     oauth.router,
     prefix="/api/v1/oauth",
     tags=["OAuth 2.0"]
+)
+app.include_router(
+    oauth_callback_router,
+    tags=["OAuth Callback"]
 )
 app.include_router(
     upload.router, 
@@ -121,6 +169,11 @@ app.include_router(
     videos.router,
     prefix="/api/v1/videos",
     tags=["videos"]
+)
+app.include_router(
+    secrets.router,
+    prefix="/api/v1/secrets",
+    tags=["secrets"]
 )
 
 

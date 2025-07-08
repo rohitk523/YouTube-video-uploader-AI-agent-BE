@@ -2,6 +2,7 @@
 FastAPI dependencies for authentication and validation
 """
 
+import logging
 import os
 from typing import Optional
 from uuid import UUID
@@ -16,6 +17,9 @@ from app.models.upload import Upload
 from app.models.user import User
 from app.schemas.upload import FileUploadInfo
 from app.services.auth import AuthService
+
+# Configure logger for dependencies
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 security = HTTPBearer(auto_error=False)
@@ -38,6 +42,8 @@ async def get_current_user(
     Raises:
         HTTPException: If authentication fails
     """
+    logger.debug("Authentication attempt started")
+    
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -45,21 +51,30 @@ async def get_current_user(
     )
     
     if not token:
+        logger.warning("Authentication failed: No token provided in Authorization header")
         raise credentials_exception
     
     # HTTPBearer automatically extracts the token from "Bearer <token>" format
     token_value = token.credentials
+    logger.debug(f"Token extracted from Authorization header (length: {len(token_value)})")
     
     # Verify token
+    logger.debug("Verifying authentication token")
     token_data = AuthService.verify_token(token_value)
     if not token_data:
+        logger.warning("Authentication failed: Invalid or expired token")
         raise credentials_exception
+    
+    logger.debug(f"Token verified successfully for user_id: {token_data.user_id}")
     
     # Get user from database
+    logger.debug(f"Fetching user from database with ID: {token_data.user_id}")
     user = await AuthService.get_user_by_id(db, token_data.user_id)
     if not user:
+        logger.warning(f"Authentication failed: User not found in database for user_id: {token_data.user_id}")
         raise credentials_exception
     
+    logger.info(f"Authentication successful for user: {user.id}")
     return user
 
 
