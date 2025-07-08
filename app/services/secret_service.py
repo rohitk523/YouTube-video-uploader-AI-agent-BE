@@ -473,7 +473,15 @@ class SecretService:
                 secret.youtube_refresh_token_encrypted = self.encryption_service.encrypt(credentials.refresh_token)
             
             # Store expiry and metadata
-            secret.youtube_token_expires_at = credentials.expiry
+            if credentials.expiry:
+                # Ensure the expiry datetime is timezone-aware before storing
+                expiry = credentials.expiry
+                if expiry.tzinfo is None:
+                    # If timezone-naive, assume UTC
+                    expiry = expiry.replace(tzinfo=timezone.utc)
+                secret.youtube_token_expires_at = expiry
+            else:
+                secret.youtube_token_expires_at = None
             secret.youtube_scopes = json.dumps(credentials.scopes or [])
             secret.youtube_authenticated = True
             secret.youtube_tokens_updated_at = datetime.now(timezone.utc)
@@ -537,7 +545,12 @@ class SecretService:
             
             # Set expiry if available
             if secret.youtube_token_expires_at:
-                creds.expiry = secret.youtube_token_expires_at
+                # Ensure the expiry datetime is timezone-aware
+                expiry = secret.youtube_token_expires_at
+                if expiry.tzinfo is None:
+                    # If timezone-naive, assume UTC
+                    expiry = expiry.replace(tzinfo=timezone.utc)
+                creds.expiry = expiry
             
             # Check if token needs refresh
             if auto_refresh and (creds.expired or self._token_expires_soon(creds)):
@@ -597,7 +610,14 @@ class SecretService:
             return False
         
         now = datetime.now(timezone.utc)
-        expires_soon = credentials.expiry - timedelta(minutes=minutes_before)
+        
+        # Ensure credentials.expiry is timezone-aware
+        expiry = credentials.expiry
+        if expiry.tzinfo is None:
+            # If timezone-naive, assume UTC
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        
+        expires_soon = expiry - timedelta(minutes=minutes_before)
         
         return now >= expires_soon
 
@@ -695,7 +715,14 @@ class SecretService:
             expires_in_minutes = None
             if secret.youtube_token_expires_at:
                 now = datetime.now(timezone.utc)
-                delta = secret.youtube_token_expires_at - now
+                
+                # Ensure youtube_token_expires_at is timezone-aware
+                expires_at = secret.youtube_token_expires_at
+                if expires_at.tzinfo is None:
+                    # If timezone-naive, assume UTC
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                
+                delta = expires_at - now
                 expires_in_minutes = int(delta.total_seconds() / 60) if delta.total_seconds() > 0 else 0
             
             # Parse scopes

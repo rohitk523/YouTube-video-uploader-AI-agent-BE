@@ -93,11 +93,24 @@ class YouTubeService:
             
             # Update progress
             if self.progress_callback:
-                await self.progress_callback(job_id, 25, "TTS audio generated, processing video...")
+                await self.progress_callback(job_id, 25, "TTS audio generated, downloading video from S3...")
+            
+            # Download video from S3 if it's an S3 URL
+            local_video_path = video_path
+            if video_path.startswith("s3://"):
+                download_result = await self.video_service.download_video_from_s3(video_path)
+                if download_result.get("status") != "success":
+                    raise Exception(f"Failed to download video from S3: {download_result.get('error_message', 'Unknown error')}")
+                local_video_path = download_result.get("local_path")
+                self.temp_files.append(local_video_path)
+            
+            # Update progress
+            if self.progress_callback:
+                await self.progress_callback(job_id, 35, "Video downloaded, processing with narration...")
             
             # Process video with narration
             video_result = await self.video_service.combine_video_with_audio(
-                video_path=video_path,
+                video_path=local_video_path,
                 audio_path=audio_path,
                 output_title=title.replace(" ", "_")
             )

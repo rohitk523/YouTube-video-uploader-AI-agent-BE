@@ -16,6 +16,7 @@ from app.services.job_service import JobService
 from app.services.youtube_service import YouTubeService
 from app.services.youtube_upload_service import YouTubeUploadService
 from app.models.user import User
+from app.services.video_service import VideoService
 # Video schemas removed - not needed for OAuth endpoints
 
 router = APIRouter()
@@ -351,12 +352,31 @@ async def upload_processed_video_to_youtube(
                 detail="No final video file found for this job"
             )
         
-        import os
-        if not os.path.exists(job.final_video_path):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Final video file no longer exists on server"
-            )
+        # Handle S3 URLs vs local file paths
+        video_path = job.final_video_path
+        temp_file_path = None
+        
+        if job.final_video_path.startswith("s3://"):
+            # Download from S3 to temp file
+            video_service = VideoService()
+            
+            download_result = await video_service.download_video_from_s3(job.final_video_path)
+            if download_result.get("status") != "success":
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to download video from S3: {download_result.get('error_message')}"
+                )
+            
+            video_path = download_result.get("local_path")
+            temp_file_path = video_path
+        else:
+            # Check if local file exists
+            import os
+            if not os.path.exists(job.final_video_path):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Final video file no longer exists on server"
+                )
         
         # Parse tags
         tag_list = [tag.strip() for tag in tags.split(",") if tag.strip()] if tags else []
@@ -364,7 +384,7 @@ async def upload_processed_video_to_youtube(
         # Upload to YouTube
         youtube_upload_service = YouTubeUploadService()
         upload_result = await youtube_upload_service.upload_video_to_youtube(
-            video_path=job.final_video_path,
+            video_path=video_path,
             title=title,
             description=description,
             tags=tag_list,
@@ -374,6 +394,15 @@ async def upload_processed_video_to_youtube(
         
         if upload_result["status"] == "error":
             raise Exception(upload_result["error_message"])
+        
+        # Clean up temp file if we downloaded from S3
+        if temp_file_path:
+            import os
+            try:
+                if os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
+            except Exception as e:
+                print(f"Warning: Failed to cleanup temp file {temp_file_path}: {e}")
         
         # Update job with YouTube info
         await job_service.update_job_progress(

@@ -104,6 +104,7 @@ def _get_config_recommendations(config_status: Dict[str, Any]) -> List[str]:
 async def upload_video(
     file: UploadFile = File(...),
     is_temp: bool = Query(True, description="Whether this is a temporary upload"),
+    custom_name: str = Query(None, description="Custom name for the video (optional)"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> UploadResponse:
@@ -113,6 +114,7 @@ async def upload_video(
     Args:
         file: Video file to upload
         is_temp: Whether this is a temporary file (default: True)
+        custom_name: Custom name for the video (optional)
         current_user: Current authenticated user
         db: Database session
         
@@ -137,7 +139,9 @@ async def upload_video(
         upload_response = await file_service.save_uploaded_file(
             file=file,
             file_type="video",
-            is_temp=is_temp
+            user_id=current_user.id,
+            is_temp=is_temp,
+            custom_name=custom_name
         )
         
         # If this is a video and not temporary, also save to videos table for easy reuse
@@ -184,6 +188,7 @@ async def upload_video(
 async def upload_transcript_text(
     transcript_data: TranscriptUpload,
     is_temp: bool = Query(True, description="Whether this is a temporary upload"),
+    custom_name: str = Query(None, description="Custom name for the transcript (optional)"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> UploadResponse:
@@ -193,11 +198,15 @@ async def upload_transcript_text(
     Args:
         transcript_data: Transcript content
         is_temp: Whether this is a temporary file (default: True)
+        custom_name: Custom name for the transcript (optional)
         current_user: Current authenticated user
         db: Database session
         
     Returns:
         UploadResponse: Upload information including S3 details
+        
+    Raises:
+        HTTPException: If upload fails
     """
     if not transcript_data.content.strip():
         raise HTTPException(
@@ -210,8 +219,9 @@ async def upload_transcript_text(
     try:
         upload_response = await file_service.save_transcript_text(
             content=transcript_data.content,
-            filename="transcript.txt",
-            is_temp=is_temp
+            user_id=current_user.id,
+            is_temp=is_temp,
+            custom_name=custom_name
         )
         return upload_response
     except Exception as e:
@@ -225,15 +235,17 @@ async def upload_transcript_text(
 async def upload_transcript_file(
     file: UploadFile = File(...),
     is_temp: bool = Query(True, description="Whether this is a temporary upload"),
+    custom_name: str = Query(None, description="Custom name for the transcript (optional)"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> UploadResponse:
     """
-    Upload a transcript file to S3.
+    Upload transcript file to S3.
     
     Args:
-        file: Transcript file (txt, md)
+        file: Transcript file to upload
         is_temp: Whether this is a temporary file (default: True)
+        custom_name: Custom name for the transcript (optional)
         current_user: Current authenticated user
         db: Database session
         
@@ -249,7 +261,7 @@ async def upload_transcript_file(
     if file_info.file_type != "transcript":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only transcript files (.txt, .md) are allowed for this endpoint"
+            detail="Only transcript files are allowed for this endpoint"
         )
     
     # Save file to S3
@@ -258,7 +270,9 @@ async def upload_transcript_file(
         upload_response = await file_service.save_uploaded_file(
             file=file,
             file_type="transcript",
-            is_temp=is_temp
+            user_id=current_user.id,
+            is_temp=is_temp,
+            custom_name=custom_name
         )
         return upload_response
     except Exception as e:

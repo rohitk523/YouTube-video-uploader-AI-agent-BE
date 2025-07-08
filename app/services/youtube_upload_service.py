@@ -8,10 +8,12 @@ import os
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 import tempfile
+import logging
 
 from app.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 class YouTubeUploadService:
@@ -181,10 +183,20 @@ class YouTubeUploadService:
             )
             
         except Exception as e:
-            return {
-                "status": "error",
-                "error_message": f"YouTube upload failed: {str(e)}"
-            }
+            # Improve error logging and avoid nested error messages
+            error_msg = str(e)
+            
+            # Don't wrap already detailed error messages
+            if "YouTube API" in error_msg or "authentication failed" in error_msg.lower():
+                return {
+                    "status": "error",
+                    "error_message": error_msg
+                }
+            else:
+                return {
+                    "status": "error",
+                    "error_message": f"YouTube upload failed: {error_msg}"
+                }
     
     async def _perform_youtube_upload(
         self,
@@ -205,16 +217,23 @@ class YouTubeUploadService:
             from googleapiclient.http import MediaFileUpload
             from googleapiclient.errors import HttpError
             
+            logger.info(f"Starting YouTube upload for user {self.user_id}")
+            
             # Get authenticated YouTube credentials with automatic refresh
+            logger.info("Retrieving YouTube credentials...")
             credentials = await self.secret_service.get_youtube_credentials(
                 user_id=self.user_id,
                 auto_refresh=True
             )
+            logger.info("YouTube credentials retrieved successfully")
             
             # Build YouTube service
+            logger.info("Building YouTube service...")
             youtube = build('youtube', 'v3', credentials=credentials)
+            logger.info("YouTube service built successfully")
             
             # Prepare video metadata
+            logger.info(f"Preparing video metadata - Title: {title}, Category: {category}, Privacy: {privacy}")
             body = {
                 'snippet': {
                     'title': title,
@@ -232,19 +251,23 @@ class YouTubeUploadService:
             }
             
             # Create media upload object
+            logger.info(f"Creating media upload object for file: {video_path}")
             media = MediaFileUpload(
                 video_path, 
                 chunksize=-1, 
                 resumable=True,
                 mimetype='video/mp4'
             )
+            logger.info("Media upload object created successfully")
             
             # Execute upload
+            logger.info("Starting YouTube API upload request...")
             insert_request = youtube.videos().insert(
                 part=','.join(body.keys()),
                 body=body,
                 media_body=media
             )
+            logger.info("Upload request created, starting upload process...")
             
             # Handle resumable upload with proper error handling
             response = None
@@ -255,27 +278,53 @@ class YouTubeUploadService:
                 try:
                     status, response = insert_request.next_chunk()
                     if status:
-                        print(f"Upload progress: {int(status.progress() * 100)}%")
+                        logger.info(f"Upload progress: {int(status.progress() * 100)}%")
                 except HttpError as e:
+                    # Extract detailed error information from Google API
+                    error_details = []
+                    
+                    # Add status code and reason
+                    error_details.append(f"HTTP {e.resp.status}: {e.reason if hasattr(e, 'reason') else 'Unknown'}")
+                    
+                    # Try to extract more specific error from the response content
+                    try:
+                        import json
+                        if hasattr(e, 'content') and e.content:
+                            content = json.loads(e.content.decode('utf-8'))
+                            if 'error' in content:
+                                if 'message' in content['error']:
+                                    error_details.append(f"Message: {content['error']['message']}")
+                                if 'errors' in content['error']:
+                                    for err in content['error']['errors']:
+                                        if 'reason' in err:
+                                            error_details.append(f"Reason: {err['reason']}")
+                                        if 'message' in err:
+                                            error_details.append(f"Detail: {err['message']}")
+                    except:
+                        # If we can't parse the error content, continue with basic error
+                        pass
+                    
+                    detailed_error = " | ".join(error_details) if error_details else str(e)
+                    
                     if e.resp.status in [401, 403]:
                         # Authentication/authorization error - likely token issue
-                        raise Exception(f"YouTube API authentication failed: {e.reason}. Please re-authenticate.")
+                        raise Exception(f"YouTube API authentication failed: {detailed_error}. Please re-authenticate with YouTube.")
                     elif e.resp.status in [500, 502, 503, 504] and retry < self.max_retries:
                         # Recoverable server errors
                         retry += 1
-                        print(f"Server error {e.resp.status}, retrying ({retry}/{self.max_retries})")
+                        logger.warning(f"Server error {e.resp.status}, retrying ({retry}/{self.max_retries}): {detailed_error}")
                         await asyncio.sleep(2 ** retry)  # Exponential backoff
                         continue
                     else:
-                        raise e
+                        raise Exception(f"YouTube API error: {detailed_error}")
                 except Exception as e:
                     if retry < self.max_retries:
                         retry += 1
-                        print(f"Upload error, retrying ({retry}/{self.max_retries}): {str(e)}")
+                        logger.warning(f"Upload error, retrying ({retry}/{self.max_retries}): {str(e)}")
                         await asyncio.sleep(2 ** retry)  # Exponential backoff
                         continue
                     else:
-                        raise e
+                        raise Exception(f"Upload failed after {self.max_retries} retries: {str(e)}")
             
             if response is None:
                 raise Exception("Upload failed - no response received")
@@ -311,10 +360,21 @@ class YouTubeUploadService:
         except ImportError:
             raise Exception("Google API client library not installed. Run: pip install google-api-python-client google-auth google-auth-oauthlib")
         except Exception as e:
+            # Log the full error details for debugging
+            logger.error(f"YouTube upload failed for user {self.user_id}: {str(e)}")
+            logger.error(f"Error type: {type(e).__name__}")
+            logger.error(f"Error details: {repr(e)}")
+            
             # Handle token refresh failures
             if "invalid_grant" in str(e).lower() or "unauthorized" in str(e).lower():
                 raise Exception(f"YouTube authentication expired or invalid: {str(e)}. Please re-authenticate with YouTube.")
-            raise Exception(f"YouTube API upload failed: {str(e)}")
+            
+            # Don't wrap already detailed error messages
+            error_msg = str(e)
+            if "YouTube API" in error_msg or "authentication failed" in error_msg.lower():
+                raise Exception(error_msg)
+            else:
+                raise Exception(f"YouTube API upload failed: {error_msg}")
     
     async def _authenticate_youtube(self, scopes: List[str]):
         """

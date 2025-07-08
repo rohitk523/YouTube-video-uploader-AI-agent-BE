@@ -3,9 +3,10 @@ Job service for managing YouTube Short creation jobs
 """
 
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from uuid import UUID
 
+from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, update
 from sqlalchemy.exc import IntegrityError
@@ -401,4 +402,227 @@ class JobService:
             if video and video.s3_key:
                 return f"s3://{video.s3_bucket}/{video.s3_key}"
         
-        return None 
+        return None
+
+    async def create_job_with_folder_structure(
+        self,
+        job_data: JobCreate,
+        user_id: UUID
+    ) -> JobResponse:
+        """
+        Create a new job and set up S3 folder structure.
+        
+        Args:
+            job_data: Job creation data
+            user_id: User ID for folder organization
+            
+        Returns:
+            JobResponse: Created job information
+            
+        Raises:
+            ValueError: If required uploads/videos not found
+        """
+        # Create the job first
+        job_response = await self.create_job(job_data)
+        
+        # Set up S3 folder structure for the new job
+        try:
+            from app.services.s3_service import S3Service
+            s3_service = S3Service()
+            
+            await s3_service.create_job_folder_structure(
+                user_id=user_id,
+                job_id=job_response.id
+            )
+            
+            return job_response
+            
+        except Exception as e:
+            # If folder creation fails, we should still return the job
+            # but log the error for investigation
+            print(f"Warning: Failed to create S3 folder structure for job {job_response.id}: {str(e)}")
+            return job_response
+    
+    async def move_temp_files_to_job(
+        self,
+        job_id: UUID,
+        user_id: UUID,
+        video_upload_id: Optional[UUID] = None,
+        transcript_upload_id: Optional[UUID] = None,
+        custom_video_name: Optional[str] = None,
+        custom_transcript_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Move temporary files to the job folder structure.
+        
+        Args:
+            job_id: Job ID
+            user_id: User ID
+            video_upload_id: Video upload ID to move
+            transcript_upload_id: Transcript upload ID to move
+            custom_video_name: Custom name for video file
+            custom_transcript_name: Custom name for transcript file
+            
+        Returns:
+            Dict with move results
+        """
+        try:
+            from app.services.s3_service import S3Service
+            s3_service = S3Service()
+            
+            results = {
+                'job_id': str(job_id),
+                'user_id': str(user_id),
+                'moved_files': [],
+                'errors': []
+            }
+            
+            # Move video file if provided
+            if video_upload_id:
+                try:
+                    video_upload = await self._get_upload_by_id(video_upload_id)
+                    if video_upload and video_upload.s3_key:
+                        move_result = await s3_service.move_temp_to_job_folder(
+                            temp_s3_key=video_upload.s3_key,
+                            user_id=user_id,
+                            job_id=job_id,
+                            file_type="video",
+                            custom_name=custom_video_name
+                        )
+                        
+                        # Update the upload record with new S3 location
+                        video_upload.s3_key = move_result['new_s3_key']
+                        video_upload.s3_url = move_result['new_s3_url']
+                        video_upload.is_temp = False
+                        video_upload.job_id = job_id
+                        
+                        results['moved_files'].append({
+                            'type': 'video',
+                            'upload_id': str(video_upload_id),
+                            'old_key': move_result['old_s3_key'],
+                            'new_key': move_result['new_s3_key']
+                        })
+                        
+                except Exception as video_error:
+                    results['errors'].append({
+                        'type': 'video',
+                        'upload_id': str(video_upload_id),
+                        'error': str(video_error)
+                    })
+            
+            # Move transcript file if provided
+            if transcript_upload_id:
+                try:
+                    transcript_upload = await self._get_upload_by_id(transcript_upload_id)
+                    if transcript_upload and transcript_upload.s3_key:
+                        move_result = await s3_service.move_temp_to_job_folder(
+                            temp_s3_key=transcript_upload.s3_key,
+                            user_id=user_id,
+                            job_id=job_id,
+                            file_type="transcript",
+                            custom_name=custom_transcript_name
+                        )
+                        
+                        # Update the upload record with new S3 location
+                        transcript_upload.s3_key = move_result['new_s3_key']
+                        transcript_upload.s3_url = move_result['new_s3_url']
+                        transcript_upload.is_temp = False
+                        transcript_upload.job_id = job_id
+                        
+                        results['moved_files'].append({
+                            'type': 'transcript',
+                            'upload_id': str(transcript_upload_id),
+                            'old_key': move_result['old_s3_key'],
+                            'new_key': move_result['new_s3_key']
+                        })
+                        
+                except Exception as transcript_error:
+                    results['errors'].append({
+                        'type': 'transcript',
+                        'upload_id': str(transcript_upload_id),
+                        'error': str(transcript_error)
+                    })
+            
+            # Commit database changes
+            await self.db.commit()
+            
+            return results
+            
+        except Exception as e:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to move temp files to job folder: {str(e)}"
+            )
+    
+    async def get_user_jobs_with_files(
+        self,
+        user_id: UUID,
+        page: int = 1,
+        page_size: int = 20
+    ) -> Dict[str, Any]:
+        """
+        Get user's jobs with their associated files from S3.
+        
+        Args:
+            user_id: User ID to filter jobs
+            page: Page number (1-based)
+            page_size: Items per page
+            
+        Returns:
+            Dict with jobs and their files
+        """
+        try:
+            from app.services.s3_service import S3Service
+            s3_service = S3Service()
+            
+            # Get paginated jobs list
+            jobs_result = await self.list_jobs(page=page, page_size=page_size)
+            
+            # For each job, get the associated files from S3
+            jobs_with_files = []
+            for job in jobs_result.jobs:
+                try:
+                    # Get videos for this job
+                    videos = await s3_service.list_user_videos(
+                        user_id=user_id,
+                        job_id=job.id,
+                        limit=10
+                    )
+                    
+                    # Get transcripts for this job (similar pattern)
+                    # This could be extended to include transcripts as well
+                    
+                    job_data = {
+                        'job': job,
+                        'videos': videos,
+                        'video_count': len(videos),
+                        'folder_path': f"{user_id}/{job.id}/"
+                    }
+                    
+                    jobs_with_files.append(job_data)
+                    
+                except Exception as file_error:
+                    # Include job even if file listing fails
+                    job_data = {
+                        'job': job,
+                        'videos': [],
+                        'video_count': 0,
+                        'folder_path': f"{user_id}/{job.id}/",
+                        'file_error': str(file_error)
+                    }
+                    jobs_with_files.append(job_data)
+            
+            return {
+                'jobs': jobs_with_files,
+                'total': jobs_result.total,
+                'page': jobs_result.page,
+                'page_size': jobs_result.page_size,
+                'total_pages': jobs_result.total_pages
+            }
+            
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get user jobs with files: {str(e)}"
+            ) 
