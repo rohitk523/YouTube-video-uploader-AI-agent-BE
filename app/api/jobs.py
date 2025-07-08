@@ -355,9 +355,13 @@ async def process_youtube_short_background(job_id: UUID, job_data: JobCreate, us
             
             logger.info(f"Job {job_id}: YouTube credentials retrieved successfully")
             
-            # Initialize YouTube service with progress callback and credentials
+            # Initialize YouTube service with progress callback and user authentication
             logger.info(f"Job {job_id}: Initializing YouTube service")
-            youtube_service = YouTubeService(progress_callback=progress_callback, credentials_dict=credentials_dict)
+            youtube_service = YouTubeService(
+                progress_callback=progress_callback, 
+                user_id=user_id,
+                secret_service=secret_service
+            )
             
             # Get video S3 URL for processing
             logger.info(f"Job {job_id}: Retrieving video S3 URL")

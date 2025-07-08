@@ -25,6 +25,7 @@ from app.schemas.upload import HealthCheck, ApiInfo
 
 # Import API routers
 from app.api import upload, jobs, youtube, oauth, videos, secrets
+from app.api.oauth_callback import router as oauth_callback_router
 
 settings = get_settings()
 
@@ -144,6 +145,10 @@ app.include_router(
     oauth.router,
     prefix="/api/v1/oauth",
     tags=["OAuth 2.0"]
+)
+app.include_router(
+    oauth_callback_router,
+    tags=["OAuth Callback"]
 )
 app.include_router(
     upload.router, 

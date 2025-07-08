@@ -17,18 +17,27 @@ settings = get_settings()
 class YouTubeService:
     """Service for YouTube integration with specialized processing services."""
     
-    def __init__(self, progress_callback: Optional[Callable] = None, credentials_dict: dict = None):
+    def __init__(self, progress_callback: Optional[Callable] = None, user_id: Optional[UUID] = None, secret_service=None):
         """
         Initialize YouTube service with specialized services.
         
         Args:
             progress_callback: Optional callback for progress updates
-            credentials_dict: YouTube OAuth credentials as dict (per-user)
+            user_id: User ID for authentication
+            secret_service: SecretService instance for token management
         """
         self.progress_callback = progress_callback
+        self.user_id = user_id
+        self.secret_service = secret_service
         self.tts_service = TTSService()
         self.video_service = VideoService()
-        self.youtube_upload_service = YouTubeUploadService(credentials_dict=credentials_dict)
+        
+        # Initialize YouTube upload service with user authentication
+        self.youtube_upload_service = YouTubeUploadService(
+            user_id=str(user_id) if user_id else None,
+            secret_service=secret_service
+        )
+        
         self.supported_voices = self.tts_service.supported_voices
         
         # Temporary file tracking for cleanup
@@ -46,202 +55,192 @@ class YouTubeService:
         mock_mode: bool = False
     ) -> Dict[str, Any]:
         """
-        Create YouTube short with full processing pipeline.
+        Create a YouTube short with narration asynchronously.
         
         Args:
             job_id: Job UUID for progress tracking
-            video_path: S3 URL or path to input video file
-            transcript: Text for TTS generation
+            video_path: Path to source video file or S3 URL
+            transcript: Text to convert to speech
             title: Video title
             description: Video description
             voice: TTS voice to use
             tags: List of video tags
-            mock_mode: If True, skip YouTube upload and prepare video for download
+            mock_mode: If True, generate video without uploading to YouTube
             
         Returns:
             Dict with processing results
-            
-        Raises:
-            Exception: If processing fails
         """
         try:
-            # Update progress: Starting
-            await self._update_progress(job_id, 5, "Initializing video processing...")
+            # Update progress
+            if self.progress_callback:
+                await self.progress_callback(job_id, 5, "Starting TTS generation...")
             
-            # Step 1: Download video from S3 if needed
-            local_video_path = video_path
-            if video_path.startswith(("http://", "https://", "s3://")):
-                await self._update_progress(job_id, 10, "Downloading video from cloud storage...")
-                download_result = await self.video_service.download_video_from_s3(video_path)
-                if download_result["status"] == "error":
-                    raise Exception(download_result["error_message"])
-                local_video_path = download_result["local_path"]
-                self.temp_files.append(local_video_path)
-                await self._update_progress(job_id, 15, "Video downloaded successfully")
-            
-            # Step 2: Process video for YouTube Shorts format
-            await self._update_progress(job_id, 20, "Processing video for YouTube Shorts format...")
-            video_result = await self.video_service.process_video_for_shorts(
-                local_video_path, target_duration=60
-            )
-            if video_result["status"] == "error":
-                raise Exception(video_result["error_message"])
-            
-            processed_video_path = video_result["output_path"]
-            self.temp_files.append(processed_video_path)
-            await self._update_progress(job_id, 35, "Video processed for Shorts format")
-            
-            # Step 3: Generate TTS audio
-            await self._update_progress(job_id, 40, "Generating AI voiceover...")
-            audio_result = await self.tts_service.generate_speech(
+            # Generate TTS audio
+            tts_result = await self.tts_service.generate_speech(
                 text=transcript,
-                voice=voice,
-                model="tts-1",
-                speed=1.0
+                voice=voice
             )
-            if audio_result["status"] == "error":
-                raise Exception(audio_result["error_message"])
             
-            audio_path = audio_result["audio_path"]
+            if tts_result.get("status") != "success":
+                raise Exception(f"TTS generation failed: {tts_result.get('error_message', 'Unknown error')}")
+            
+            audio_path = tts_result.get("audio_path")
+            
+            if not audio_path:
+                raise Exception("Failed to generate TTS audio")
+            
             self.temp_files.append(audio_path)
-            await self._update_progress(job_id, 55, "AI voiceover generated successfully")
             
-            # Step 4: Combine video and audio
-            await self._update_progress(job_id, 60, "Combining video with AI voiceover...")
-            combine_result = await self.video_service.combine_video_with_audio(
-                video_path=processed_video_path,
+            # Update progress
+            if self.progress_callback:
+                await self.progress_callback(job_id, 25, "TTS audio generated, processing video...")
+            
+            # Process video with narration
+            video_result = await self.video_service.combine_video_with_audio(
+                video_path=video_path,
                 audio_path=audio_path,
-                output_title=title
+                output_title=title.replace(" ", "_")
             )
-            if combine_result["status"] == "error":
-                raise Exception(combine_result["error_message"])
             
-            final_video_path = combine_result["output_path"]
+            if video_result.get("status") != "success":
+                raise Exception(f"Failed to process video with narration: {video_result.get('error_message', 'Unknown error')}")
+            
+            final_video_path = video_result.get("output_path")
+            
             self.temp_files.append(final_video_path)
-            await self._update_progress(job_id, 75, "Video and audio combined successfully")
             
-            # Step 5: Handle YouTube upload or mock mode
+            # Update progress
+            if self.progress_callback:
+                await self.progress_callback(job_id, 75, "Video processing complete...")
+            
+            # Mock mode: Don't upload to YouTube
             if mock_mode:
-                await self._update_progress(job_id, 90, "Preparing video for download (mock mode)...")
+                if self.progress_callback:
+                    await self.progress_callback(job_id, 100, "Video ready for download (mock mode)")
                 
-                # In mock mode, skip YouTube upload and prepare download
-                await self._update_progress(job_id, 100, "Video processing completed - ready for download!")
-                
-                result = {
+                return {
                     "status": "success",
-                    "mock_mode": True,
-                    "download_ready": True,
+                    "mode": "mock",
                     "final_video_path": final_video_path,
-                    "youtube_url": None,
-                    "youtube_video_id": None,
-                    "shorts_url": None,
-                    "processing_steps": {
-                        "video_download": download_result if video_path != local_video_path else None,
-                        "video_processing": video_result,
-                        "audio_generation": audio_result,
-                        "video_combination": combine_result,
-                        "youtube_upload": {"status": "skipped", "reason": "mock_mode_enabled"}
+                    "title": title,
+                    "description": description,
+                    "tags": tags or [],
+                    "voice_used": voice,
+                    "processing_info": {
+                        "audio_generated": True,
+                        "video_processed": True,
+                        "youtube_uploaded": False
                     },
-                    "metadata": {
-                        "original_video_duration": video_result.get("original_info", {}).get("duration"),
-                        "final_video_duration": combine_result.get("duration"),
-                        "audio_duration": audio_result.get("duration"),
-                        "file_size_mb": combine_result.get("file_size_mb"),
-                        "voice_used": voice,
-                        "video_resolution": "1080x1920",
-                        "temp_files_created": len(self.temp_files)
-                    }
-                }
-            else:
-                await self._update_progress(job_id, 80, "Uploading to YouTube...")
-                upload_result = await self.youtube_upload_service.upload_video_to_youtube(
-                    video_path=final_video_path,
-                    title=title,
-                    description=description,
-                    tags=tags or [],
-                    category="entertainment",
-                    privacy="public"
-                )
-                if upload_result["status"] == "error":
-                    raise Exception(upload_result["error_message"])
-                
-                await self._update_progress(job_id, 100, "Successfully uploaded to YouTube!")
-                
-                # Prepare comprehensive result
-                result = {
-                    "status": "success",
-                    "mock_mode": False,
-                    "download_ready": False,
-                    "youtube_url": upload_result["video_url"],
-                    "youtube_video_id": upload_result["video_id"],
-                    "shorts_url": upload_result.get("shorts_url"),
-                    "final_video_path": final_video_path,
-                    "processing_steps": {
-                        "video_download": download_result if video_path != local_video_path else None,
-                        "video_processing": video_result,
-                        "audio_generation": audio_result,
-                        "video_combination": combine_result,
-                        "youtube_upload": upload_result
-                    },
-                    "metadata": {
-                        "original_video_duration": video_result.get("original_info", {}).get("duration"),
-                        "final_video_duration": combine_result.get("duration"),
-                        "audio_duration": audio_result.get("duration"),
-                        "file_size_mb": combine_result.get("file_size_mb"),
-                        "voice_used": voice,
-                        "video_resolution": "1080x1920",
-                        "temp_files_created": len(self.temp_files)
-                    }
+                    "message": "Video processed successfully. Ready for download."
                 }
             
-            return result
+            # Real mode: Upload to YouTube
+            if self.progress_callback:
+                await self.progress_callback(job_id, 80, "Uploading to YouTube...")
+            
+            # Check authentication before upload
+            if not self.user_id or not self.secret_service:
+                raise Exception("User authentication not configured for YouTube upload")
+            
+            # Upload to YouTube
+            upload_result = await self.youtube_upload_service.upload_video_to_youtube(
+                video_path=final_video_path,
+                title=title,
+                description=description,
+                tags=tags or [],
+                category="entertainment",
+                privacy="public"
+            )
+            
+            if upload_result.get("status") == "error":
+                raise Exception(f"YouTube upload failed: {upload_result.get('error_message')}")
+            
+            # Update progress
+            if self.progress_callback:
+                await self.progress_callback(job_id, 100, "Upload completed successfully!")
+            
+            # Cleanup temp files
+            await self._cleanup_temp_files()
+            
+            return {
+                "status": "success",
+                "mode": "production",
+                "youtube_data": upload_result,
+                "final_video_path": final_video_path,
+                "processing_info": {
+                    "audio_generated": True,
+                    "video_processed": True,
+                    "youtube_uploaded": True
+                },
+                "title": title,
+                "description": description,
+                "tags": tags or [],
+                "voice_used": voice
+            }
             
         except Exception as e:
-            await self._update_progress(job_id, -1, f"Error: {str(e)}")
-            raise e
+            # Cleanup on error
+            await self._cleanup_temp_files()
+            
+            # Handle authentication errors specifically
+            if "authentication" in str(e).lower() or "invalid_grant" in str(e).lower():
+                if self.progress_callback:
+                    await self.progress_callback(job_id, -1, f"YouTube authentication failed: {str(e)}")
+                raise Exception(f"YouTube authentication failed: {str(e)}. Please re-authenticate with YouTube.")
+            
+            if self.progress_callback:
+                await self.progress_callback(job_id, -1, f"Processing failed: {str(e)}")
+            
+            raise Exception(f"YouTube short creation failed: {str(e)}")
     
-    async def validate_processing_requirements(self) -> Dict[str, Any]:
+    def create_youtube_short(
+        self,
+        video_path: str,
+        transcript: str,
+        title: str,
+        description: str = "",
+        voice: str = "alloy",
+        tags: Optional[List[str]] = None,
+        mock_mode: bool = False
+    ) -> Dict[str, Any]:
         """
-        Validate that all required tools and services are available.
+        Synchronous wrapper for create_youtube_short_async.
         
+        Args:
+            video_path: Path to source video file
+            transcript: Text to convert to speech
+            title: Video title
+            description: Video description
+            voice: TTS voice to use
+            tags: List of video tags
+            mock_mode: If True, generate video without uploading to YouTube
+            
         Returns:
-            Dict with validation results
+            Dict with processing results
         """
-        requirements = {
-            "ffmpeg_available": self.video_service._check_ffmpeg_available(),
-            "ffprobe_available": self.video_service._check_ffprobe_available(),
-            "openai_configured": bool(settings.openai_api_key),
-            "youtube_configured": bool(
-                getattr(settings, 'youtube_api_key', None) or 
-                getattr(settings, 'youtube_client_secrets_file', None)
-            )
-        }
+        return asyncio.run(self.create_youtube_short_async(
+            job_id=UUID('00000000-0000-0000-0000-000000000000'),  # Dummy UUID for sync calls
+            video_path=video_path,
+            transcript=transcript,
+            title=title,
+            description=description,
+            voice=voice,
+            tags=tags,
+            mock_mode=mock_mode
+        ))
+    
+    async def _cleanup_temp_files(self):
+        """Clean up temporary files."""
+        import os
         
-        missing_requirements = []
+        for file_path in self.temp_files:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except Exception as e:
+                print(f"Warning: Failed to cleanup temp file {file_path}: {e}")
         
-        if not requirements["ffmpeg_available"]:
-            missing_requirements.append("FFmpeg is required for video processing")
-        
-        if not requirements["ffprobe_available"]:
-            missing_requirements.append("FFprobe is required for video analysis")
-        
-        if not requirements["openai_configured"]:
-            missing_requirements.append("OpenAI API key is required for TTS generation")
-        
-        # YouTube is optional for mock mode
-        if not requirements["youtube_configured"]:
-            missing_requirements.append("YouTube API credentials are recommended for real uploads")
-        
-        return {
-            "all_requirements_met": len(missing_requirements) == 0,
-            "requirements": requirements,
-            "missing_requirements": missing_requirements,
-            "installation_notes": {
-                "ffmpeg": "Install FFmpeg: https://ffmpeg.org/download.html",
-                "openai": "Set OPENAI_API_KEY environment variable",
-                "youtube": "Configure YouTube API credentials (see setup instructions)"
-            }
-        }
+        self.temp_files.clear()
     
     def get_supported_voices(self) -> List[str]:
         """
@@ -250,102 +249,64 @@ class YouTubeService:
         Returns:
             List of supported voice names
         """
-        return self.supported_voices.copy()
-    
-    def get_voice_info(self) -> Dict[str, Any]:
-        """
-        Get detailed voice information.
-        
-        Returns:
-            Dict with voice information
-        """
-        return self.tts_service.get_voice_info()
+        return self.supported_voices
     
     async def get_processing_capabilities(self) -> Dict[str, Any]:
         """
-        Get information about processing capabilities.
+        Get detailed processing capabilities and system requirements.
         
         Returns:
             Dict with capabilities information
         """
-        requirements = await self.validate_processing_requirements()
+        tts_capabilities = await self.tts_service.get_capabilities()
+        video_capabilities = await self.video_service.get_capabilities()
+        youtube_guidelines = self.youtube_upload_service.get_upload_guidelines()
         
         return {
-            "video_processing": {
-                "supported_formats": self.video_service.supported_formats,
-                "target_resolution": "1080x1920",
-                "max_duration": 60,
-                "output_format": "mp4"
+            "tts_processing": tts_capabilities,
+            "video_processing": video_capabilities,
+            "youtube_upload": youtube_guidelines,
+            "authentication": {
+                "type": "Database-based OAuth with automatic refresh",
+                "supported_flows": [
+                    "OAuth 2.0 Authorization Code",
+                    "Automatic token refresh",
+                    "Per-user credential management"
+                ],
+                "security_features": [
+                    "Encrypted token storage",
+                    "Automatic token refresh",
+                    "Secure credential management",
+                    "Authentication status tracking"
+                ]
             },
-            "audio_generation": {
-                "service": "OpenAI TTS",
-                "supported_voices": self.supported_voices,
-                "supported_formats": ["mp3", "opus", "aac", "flac"],
-                "character_limit": 4096,
-                "speed_range": {"min": 0.25, "max": 4.0}
+            "processing_modes": {
+                "mock_mode": {
+                    "description": "Generate video without YouTube upload",
+                    "use_case": "Testing and preview",
+                    "output": "Local video file for download"
+                },
+                "production_mode": {
+                    "description": "Full processing with YouTube upload",
+                    "use_case": "Publishing to YouTube",
+                    "output": "YouTube video URL and metadata"
+                }
             },
-            "youtube_upload": {
-                "supported_categories": list(self.youtube_upload_service.supported_categories.keys()),
-                "privacy_options": ["public", "unlisted", "private"],
-                "real_uploads_enabled": requirements["requirements"]["youtube_configured"],
-                "mock_mode_available": True
-            },
-            "requirements_status": requirements,
-            "estimated_processing_time": "2-5 minutes per video"
-        }
-    
-    async def cleanup_temp_files(self) -> Dict[str, Any]:
-        """
-        Clean up all temporary files created during processing.
-        
-        Returns:
-            Dict with cleanup results
-        """
-        if not self.temp_files:
-            return {
-                "cleaned_files": 0,
-                "message": "No temporary files to clean up"
+            "supported_operations": [
+                "Text-to-speech generation",
+                "Video processing with narration overlay", 
+                "YouTube Shorts optimization",
+                "Automated YouTube upload",
+                "Video format conversion",
+                "Audio synchronization"
+            ],
+            "performance": {
+                "typical_processing_time": "2-5 minutes per video",
+                "max_video_length": "60 seconds (YouTube Shorts)",
+                "supported_formats": ["mp4", "mov", "avi", "webm"],
+                "output_format": "MP4 (H.264)"
             }
-        
-        # Clean up TTS files
-        tts_cleanup = await self.tts_service.cleanup_temp_files(self.temp_files)
-        
-        # Clean up video files 
-        video_cleanup = await self.video_service.cleanup_temp_files(self.temp_files)
-        
-        total_cleaned = tts_cleanup["cleaned_files"] + video_cleanup["cleaned_files"]
-        total_failed = tts_cleanup["failed_files"] + video_cleanup["failed_files"]
-        
-        # Clear the temp files list
-        self.temp_files.clear()
-        
-        return {
-            "cleaned_files": total_cleaned,
-            "failed_files": total_failed,
-            "tts_cleanup": tts_cleanup,
-            "video_cleanup": video_cleanup
         }
-    
-    async def _update_progress(self, job_id: UUID, progress: int, message: str):
-        """
-        Update job progress.
-        
-        Args:
-            job_id: Job UUID
-            progress: Progress percentage (0-100, -1 for error)
-            message: Progress message
-        """
-        if self.progress_callback:
-            await self.progress_callback(job_id, progress, message)
-    
-    async def get_youtube_guidelines(self) -> Dict[str, Any]:
-        """
-        Get YouTube upload guidelines and optimization tips.
-        
-        Returns:
-            Dict with guidelines
-        """
-        return self.youtube_upload_service.get_upload_guidelines()
     
     async def get_setup_instructions(self) -> Dict[str, Any]:
         """
@@ -368,15 +329,172 @@ class YouTubeService:
                     "FFprobe (usually comes with FFmpeg)"
                 ],
                 "environment_variables": {
-                    "OPENAI_API_KEY": "OpenAI API key for TTS generation",
-                    "YOUTUBE_API_KEY": "YouTube Data API key (optional)",
-                    "YOUTUBE_CLIENT_SECRETS_FILE": "Path to YouTube OAuth2 credentials"
+                    "OPENAI_API_KEY": "OpenAI API key for TTS generation"
                 }
+            },
+            "authentication_setup": {
+                "description": "Complete YouTube OAuth setup",
+                "steps": [
+                    "1. Upload OAuth credentials via /api/v1/secrets/upload",
+                    "2. Initiate OAuth flow via /api/v1/secrets/youtube/oauth/init", 
+                    "3. Complete authorization and callback via /api/v1/secrets/youtube/oauth/callback",
+                    "4. Verify authentication via /api/v1/secrets/youtube/auth/status"
+                ],
+                "benefits": [
+                    "Automatic token refresh",
+                    "Secure encrypted storage", 
+                    "Per-user authentication",
+                    "No manual token management"
+                ]
             },
             "quick_start": [
                 "1. Install FFmpeg on your system",
                 "2. Set OPENAI_API_KEY environment variable", 
-                "3. Configure YouTube API credentials (optional)",
-                "4. Test with a small video file first"
+                "3. Upload YouTube OAuth credentials",
+                "4. Complete YouTube OAuth flow",
+                "5. Test with a small video file first"
             ]
-        } 
+        }
+
+    async def get_oauth_url(self, user_id: UUID) -> Dict[str, str]:
+        """
+        Get YouTube OAuth authorization URL for user authentication.
+        
+        Args:
+            user_id: UUID of the user
+            
+        Returns:
+            Dict containing auth_url and state
+        """
+        if not self.secret_service:
+            from app.services.secret_service import SecretService
+            from app.database import get_db_session
+            
+            async with get_db_session() as db:
+                self.secret_service = SecretService(db)
+        
+        try:
+            # Use the YouTube upload service to get OAuth URL
+            oauth_data = await self.youtube_upload_service.get_oauth_authorization_url(str(user_id))
+            
+            return {
+                "auth_url": oauth_data["authorization_url"],
+                "state": oauth_data.get("state", "")
+            }
+        except Exception as e:
+            raise Exception(f"Failed to get OAuth URL: {str(e)}")
+
+    async def handle_oauth_callback(self, user_id: UUID, code: str, state: str) -> Dict[str, Any]:
+        """
+        Handle OAuth callback and store tokens.
+        
+        Args:
+            user_id: UUID of the user
+            code: Authorization code from OAuth callback
+            state: State parameter from OAuth callback
+            
+        Returns:
+            Dict with authentication result
+        """
+        if not self.secret_service:
+            from app.services.secret_service import SecretService
+            from app.database import get_db_session
+            
+            async with get_db_session() as db:
+                self.secret_service = SecretService(db)
+        
+        try:
+            # Use the YouTube upload service to handle callback
+            result = await self.youtube_upload_service.handle_oauth_callback(
+                user_id=str(user_id),
+                authorization_code=code,
+                state=state
+            )
+            
+            return {
+                "authenticated": True,
+                "message": "YouTube authentication successful",
+                "channel_info": result.get("channel_info", {})
+            }
+        except Exception as e:
+            return {
+                "authenticated": False,
+                "message": f"Authentication failed: {str(e)}"
+            }
+
+    async def get_auth_status(self, user_id: UUID) -> Dict[str, Any]:
+        """
+        Get YouTube authentication status for user.
+        
+        Args:
+            user_id: UUID of the user
+            
+        Returns:
+            Dict with authentication status
+        """
+        if not self.secret_service:
+            from app.services.secret_service import SecretService
+            from app.database import get_db_session
+            
+            async with get_db_session() as db:
+                self.secret_service = SecretService(db)
+        
+        try:
+            # Check if user has valid YouTube authentication
+            secret = await self.secret_service.get_active_secret(user_id)
+            
+            # Add debug logging
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"[DEBUG] get_auth_status for user {user_id}")
+            logger.info(f"[DEBUG] Secret found: {secret is not None}")
+            if secret:
+                logger.info(f"[DEBUG] youtube_authenticated: {secret.youtube_authenticated}")
+                logger.info(f"[DEBUG] has_access_token: {secret.youtube_access_token_encrypted is not None}")
+                logger.info(f"[DEBUG] has_refresh_token: {secret.youtube_refresh_token_encrypted is not None}")
+            
+            if not secret:
+                return {
+                    "is_authenticated": False,
+                    "channel_id": None,
+                    "channel_title": None,
+                    "authenticated_at": None
+                }
+            
+            # Check if YouTube tokens exist and are valid
+            # For now, just require access token (refresh token is optional but recommended)
+            has_youtube_auth = (
+                secret.youtube_authenticated and
+                secret.youtube_access_token_encrypted
+            )
+            
+            logger.info(f"[DEBUG] has_youtube_auth check result: {has_youtube_auth}")
+            logger.info(f"[DEBUG] youtube_authenticated: {secret.youtube_authenticated}")
+            logger.info(f"[DEBUG] has_access_token: {secret.youtube_access_token_encrypted is not None}")
+            logger.info(f"[DEBUG] has_refresh_token: {secret.youtube_refresh_token_encrypted is not None}")
+            
+            if has_youtube_auth:
+                logger.info(f"[DEBUG] has_youtube_auth is True, returning authenticated")
+                # For now, just return authenticated if tokens exist
+                # We can add channel info verification later once basic auth works
+                return {
+                    "is_authenticated": True,
+                    "channel_id": None,  # Will add this back once we fix the basic auth
+                    "channel_title": None,  # Will add this back once we fix the basic auth
+                    "authenticated_at": secret.youtube_tokens_updated_at.isoformat() if secret.youtube_tokens_updated_at else None
+                }
+            
+            return {
+                "is_authenticated": False,
+                "channel_id": None,
+                "channel_title": None,
+                "authenticated_at": None
+            }
+            
+        except Exception as e:
+            return {
+                "is_authenticated": False,
+                "channel_id": None,
+                "channel_title": None,
+                "authenticated_at": None
+            } 

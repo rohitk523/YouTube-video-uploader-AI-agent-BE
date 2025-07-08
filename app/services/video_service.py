@@ -829,4 +829,48 @@ class VideoService:
                 "cleaned": cleaned_files,
                 "failed": failed_files
             }
-        } 
+        }
+    
+    async def get_capabilities(self) -> Dict[str, Any]:
+        """
+        Get video service capabilities.
+        
+        Returns:
+            Dict with video capabilities information
+        """
+        ffmpeg_available = self._check_ffmpeg_available()
+        ffprobe_available = self._check_ffprobe_available()
+        
+        return {
+            "service": "Video Processing Service",
+            "dependencies": {
+                "ffmpeg_available": ffmpeg_available,
+                "ffprobe_available": ffprobe_available,
+                "boto3_available": True,  # Assume available since it's in requirements
+                "httpx_available": True   # Assume available since it's in requirements
+            },
+            "supported_formats": self.supported_formats,
+            "target_resolution": self.target_resolution,
+            "max_duration": self.max_duration,
+            "features": {
+                "s3_download": True,
+                "https_download": True,
+                "video_audio_combination": ffmpeg_available,
+                "video_processing": ffmpeg_available,
+                "audio_extraction": ffmpeg_available,
+                "format_conversion": ffmpeg_available,
+                "metadata_extraction": ffprobe_available
+            },
+            "youtube_shorts": {
+                "target_format": "mp4",
+                "target_resolution": "1080x1920",
+                "max_duration_seconds": 60,
+                "audio_codec": "aac",
+                "video_codec": "h264"
+            },
+            "performance": {
+                "supports_async": True,
+                "concurrent_processing": True,
+                "temp_file_cleanup": True
+            }
+        }

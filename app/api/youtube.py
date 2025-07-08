@@ -2,20 +2,21 @@
 YouTube API endpoints
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status, Response, UploadFile, File, Form
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, status, Response, UploadFile, File, Form, Query, Body
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_current_user
-from app.database import get_db
+from app.core.dependencies import get_current_user, get_db
 from app.schemas.upload import SupportedVoices
 from app.schemas.job import JobCreate, JobResponse
 from app.services.job_service import JobService
 from app.services.youtube_service import YouTubeService
 from app.services.youtube_upload_service import YouTubeUploadService
+from app.models.user import User
+# Video schemas removed - not needed for OAuth endpoints
 
 router = APIRouter()
 
@@ -661,4 +662,79 @@ async def get_voice_preview_cache_info(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get cache info: {str(e)}"
-        ) 
+        )
+
+
+@router.get("/auth-url")
+async def get_youtube_auth_url(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get YouTube OAuth authorization URL"""
+    from app.services.secret_service import SecretService
+    secret_service = SecretService(db)
+    youtube_service = YouTubeService(user_id=current_user.id, secret_service=secret_service)
+    try:
+        auth_data = await youtube_service.get_oauth_url(current_user.id)
+        return {
+            "auth_url": auth_data["auth_url"],
+            "state": auth_data["state"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/callback")
+async def youtube_oauth_callback(
+    code: str = Body(..., embed=True),
+    state: str = Body(..., embed=True),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Handle YouTube OAuth callback"""
+    from app.services.secret_service import SecretService
+    secret_service = SecretService(db)
+    youtube_service = YouTubeService(user_id=current_user.id, secret_service=secret_service)
+    try:
+        result = await youtube_service.handle_oauth_callback(
+            user_id=current_user.id,
+            code=code,
+            state=state
+        )
+        return {
+            "success": True,
+            "message": "YouTube authentication successful",
+            "authenticated": result["authenticated"]
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": str(e),
+            "authenticated": False
+        }
+
+
+@router.get("/auth-status")
+async def get_youtube_auth_status(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get YouTube authentication status"""
+    from app.services.secret_service import SecretService
+    secret_service = SecretService(db)
+    youtube_service = YouTubeService(user_id=current_user.id, secret_service=secret_service)
+    try:
+        status = await youtube_service.get_auth_status(current_user.id)
+        return {
+            "is_authenticated": status["is_authenticated"],
+            "channel_id": status.get("channel_id"),
+            "channel_title": status.get("channel_title"),
+            "authenticated_at": status.get("authenticated_at")
+        }
+    except Exception as e:
+        return {
+            "is_authenticated": False,
+            "channel_id": None,
+            "channel_title": None,
+            "authenticated_at": None
+        } 

@@ -75,6 +75,31 @@ class Secret(Base):
         nullable=True
     )
     
+    # YouTube OAuth tokens (encrypted) - NEW FIELDS
+    youtube_access_token_encrypted: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Encrypted YouTube access token obtained after OAuth flow"
+    )
+    
+    youtube_refresh_token_encrypted: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Encrypted YouTube refresh token for automatic token renewal"
+    )
+    
+    youtube_token_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="When the YouTube access token expires (UTC)"
+    )
+    
+    youtube_scopes: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="JSON array of granted YouTube OAuth scopes"
+    )
+    
     # Status tracking
     is_active: Mapped[bool] = mapped_column(
         Boolean,
@@ -86,6 +111,14 @@ class Secret(Base):
         Boolean,
         default=False,
         nullable=False
+    )
+    
+    # YouTube authentication status - NEW FIELD
+    youtube_authenticated: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="Whether user has completed YouTube OAuth flow and has valid tokens"
     )
     
     # Original filename for reference
@@ -113,8 +146,21 @@ class Secret(Base):
         nullable=True
     )
     
+    # NEW TIMESTAMP FIELDS for token tracking
+    youtube_tokens_updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="When the YouTube tokens were last updated/refreshed"
+    )
+    
+    youtube_last_refresh_attempt: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="When we last attempted to refresh the YouTube tokens"
+    )
+    
     # Relationships
     user = relationship("User", back_populates="secrets")
 
     def __repr__(self) -> str:
-        return f"<Secret(id='{self.id}', user_id='{self.user_id}', project_id='{self.project_id}')>" 
+        return f"<Secret(id='{self.id}', user_id='{self.user_id}', project_id='{self.project_id}', youtube_authenticated={self.youtube_authenticated})>" 

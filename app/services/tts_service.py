@@ -553,4 +553,32 @@ class TTSService:
                 "cleaned": cleaned_files,
                 "failed": failed_files
             }
-        } 
+        }
+    
+    async def get_capabilities(self) -> Dict[str, Any]:
+        """
+        Get TTS service capabilities.
+        
+        Returns:
+            Dict with TTS capabilities information
+        """
+        return {
+            "service": "OpenAI Text-to-Speech",
+            "api_available": self.client is not None,
+            "supported_voices": self.supported_voices,
+            "supported_models": self.supported_models,
+            "supported_formats": ["mp3", "opus", "aac", "flac"],
+            "speed_range": {"min": 0.25, "max": 4.0, "default": 1.0},
+            "character_limit": 4096,
+            "features": {
+                "voice_preview": True,
+                "caching": True,
+                "fallback_mode": True,
+                "mock_mode": True
+            },
+            "performance": {
+                "average_generation_time": "2-10 seconds",
+                "supports_async": True,
+                "concurrent_requests": True
+            }
+        }

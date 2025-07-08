@@ -6,22 +6,48 @@ import base64
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, status, Form
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, status, Form, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user
-from app.database import get_db
+from app.database import get_db, restart_database_connection
 from app.models.user import User
 from app.schemas.secret import (
     SecretUploadRequest,
     SecretValidationResponse,
     SecretUploadResponse,
     SecretResponse,
-    SecretStatusResponse
+    SecretStatusResponse,
+    YouTubeOAuthInitRequest,
+    YouTubeOAuthInitResponse,
+    YouTubeOAuthCallbackRequest,
+    YouTubeOAuthCallbackResponse,
+    YouTubeTokenRefreshRequest,
+    YouTubeTokenRefreshResponse,
+    YouTubeAuthStatusResponse
 )
 from app.services.secret_service import SecretService
 
 router = APIRouter()
+
+
+@router.post("/restart-db-connection", tags=["Admin"])
+async def restart_db_connection(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> dict:
+    """
+    Admin endpoint to restart database connection pool.
+    This clears all cached prepared statements.
+    """
+    try:
+        await restart_database_connection()
+        return {"message": "Database connection pool restarted successfully"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to restart database connection: {str(e)}"
+        )
 
 
 @router.post("/validate", response_model=SecretValidationResponse, tags=["Secrets"])
@@ -223,4 +249,175 @@ async def reupload_oauth_secret(
         SecretUploadResponse: Upload result
     """
     # This is the same as upload - it automatically deactivates existing secrets
-    return await upload_oauth_secret(file, current_user, db) 
+    return await upload_oauth_secret(file, current_user, db)
+
+
+# NEW YOUTUBE OAUTH ENDPOINTS
+
+@router.post("/youtube/oauth/init", response_model=YouTubeOAuthInitResponse, tags=["YouTube OAuth"])
+async def initiate_youtube_oauth(
+    request: YouTubeOAuthInitRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> YouTubeOAuthInitResponse:
+    """
+    Initiate YouTube OAuth 2.0 authorization flow.
+    
+    This endpoint generates an authorization URL that the user should visit
+    to grant YouTube access permissions. After user consent, they will be
+    redirected back to your callback URL with an authorization code.
+    
+    Args:
+        request: OAuth initialization request with scopes
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        YouTubeOAuthInitResponse: Authorization URL and state parameter
+        
+    Raises:
+        HTTPException: If OAuth flow initialization fails
+    """
+    secret_service = SecretService(db)
+    return await secret_service.initiate_youtube_oauth(
+        user_id=current_user.id,
+        scopes=request.scopes,
+        state=request.state
+    )
+
+
+@router.post("/youtube/oauth/callback", response_model=YouTubeOAuthCallbackResponse, tags=["YouTube OAuth"])
+async def handle_youtube_oauth_callback(
+    request: YouTubeOAuthCallbackRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> YouTubeOAuthCallbackResponse:
+    """
+    Handle YouTube OAuth 2.0 authorization callback.
+    
+    This endpoint processes the authorization code received from YouTube
+    after user consent and exchanges it for access and refresh tokens.
+    The tokens are then encrypted and stored in the database.
+    
+    Args:
+        request: OAuth callback request with authorization code
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        YouTubeOAuthCallbackResponse: Callback processing result
+        
+    Raises:
+        HTTPException: If callback processing fails
+    """
+    secret_service = SecretService(db)
+    return await secret_service.handle_youtube_oauth_callback(
+        user_id=current_user.id,
+        code=request.code,
+        state=request.state
+    )
+
+
+@router.get("/youtube/auth/status", response_model=YouTubeAuthStatusResponse, tags=["YouTube OAuth"])
+async def get_youtube_auth_status(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> YouTubeAuthStatusResponse:
+    """
+    Get YouTube authentication status for the current user.
+    
+    This endpoint provides information about the user's YouTube OAuth
+    authentication state, including token expiry and granted scopes.
+    
+    Args:
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        YouTubeAuthStatusResponse: YouTube authentication status
+    """
+    secret_service = SecretService(db)
+    return await secret_service.get_youtube_auth_status(current_user.id)
+
+
+@router.post("/youtube/tokens/refresh", response_model=YouTubeTokenRefreshResponse, tags=["YouTube OAuth"])
+async def refresh_youtube_tokens(
+    request: YouTubeTokenRefreshRequest = YouTubeTokenRefreshRequest(),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> YouTubeTokenRefreshResponse:
+    """
+    Manually refresh YouTube OAuth tokens.
+    
+    This endpoint allows manual refresh of YouTube access tokens using
+    the stored refresh token. Normally, tokens are refreshed automatically
+    when needed, but this endpoint can be used for manual refresh or testing.
+    
+    Args:
+        request: Token refresh request
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        YouTubeTokenRefreshResponse: Token refresh result
+    """
+    secret_service = SecretService(db)
+    return await secret_service.refresh_youtube_tokens(
+        user_id=current_user.id,
+        force_refresh=request.force_refresh
+    )
+
+
+@router.delete("/youtube/auth", tags=["YouTube OAuth"])
+async def revoke_youtube_auth(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> dict:
+    """
+    Revoke YouTube authentication and clear stored tokens.
+    
+    This endpoint clears all stored YouTube OAuth tokens for the user,
+    requiring them to re-authenticate for future YouTube operations.
+    
+    Args:
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        dict: Revocation confirmation
+        
+    Raises:
+        HTTPException: If revocation fails
+    """
+    secret_service = SecretService(db)
+    secret = await secret_service.get_active_secret(current_user.id)
+    
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No OAuth credentials found"
+        )
+    
+    try:
+        # Clear YouTube tokens and authentication status
+        secret.youtube_access_token_encrypted = None
+        secret.youtube_refresh_token_encrypted = None
+        secret.youtube_token_expires_at = None
+        secret.youtube_scopes = None
+        secret.youtube_authenticated = False
+        secret.youtube_tokens_updated_at = None
+        secret.youtube_last_refresh_attempt = None
+        
+        await db.commit()
+        
+        return {
+            "message": "YouTube authentication revoked successfully",
+            "requires_reauth": True
+        }
+        
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to revoke YouTube authentication: {str(e)}"
+        ) 
