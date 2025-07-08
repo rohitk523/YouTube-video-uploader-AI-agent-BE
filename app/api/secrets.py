@@ -1,0 +1,226 @@
+"""
+Secrets API endpoints for YouTube OAuth credentials management
+"""
+
+import base64
+from typing import List
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, status, Form
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.dependencies import get_current_user
+from app.database import get_db
+from app.models.user import User
+from app.schemas.secret import (
+    SecretUploadRequest,
+    SecretValidationResponse,
+    SecretUploadResponse,
+    SecretResponse,
+    SecretStatusResponse
+)
+from app.services.secret_service import SecretService
+
+router = APIRouter()
+
+
+@router.post("/validate", response_model=SecretValidationResponse, tags=["Secrets"])
+async def validate_oauth_json(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> SecretValidationResponse:
+    """
+    Validate YouTube OAuth JSON file without storing it.
+    
+    Args:
+        file: JSON file to validate
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        SecretValidationResponse: Validation result
+        
+    Raises:
+        HTTPException: If validation fails
+    """
+    # Validate file type
+    if not file.filename.endswith('.json'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be a JSON file"
+        )
+    
+    # Read and encode file content
+    try:
+        content = await file.read()
+        file_content_base64 = base64.b64encode(content).decode('utf-8')
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to read file: {str(e)}"
+        )
+    
+    # Validate using service
+    secret_service = SecretService(db)
+    return await secret_service.validate_oauth_json(file_content_base64)
+
+
+@router.post("/upload", response_model=SecretUploadResponse, tags=["Secrets"])
+async def upload_oauth_secret(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> SecretUploadResponse:
+    """
+    Upload and store YouTube OAuth JSON file.
+    
+    This endpoint stores the OAuth credentials securely with encryption.
+    Only one active secret per user is allowed.
+    
+    Args:
+        file: JSON file containing OAuth credentials
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        SecretUploadResponse: Upload result with secret information
+        
+    Raises:
+        HTTPException: If upload fails
+    """
+    # Validate file type
+    if not file.filename.endswith('.json'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be a JSON file"
+        )
+    
+    # Check file size (limit to 1MB)
+    max_size = 1024 * 1024  # 1MB
+    content = await file.read()
+    if len(content) > max_size:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="File too large. Maximum size is 1MB"
+        )
+    
+    # Encode file content
+    try:
+        file_content_base64 = base64.b64encode(content).decode('utf-8')
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to process file: {str(e)}"
+        )
+    
+    # Upload using service
+    secret_service = SecretService(db)
+    secret_response = await secret_service.upload_secret(
+        user_id=current_user.id,
+        filename=file.filename,
+        file_content=file_content_base64
+    )
+    
+    return SecretUploadResponse(
+        id=secret_response.id,
+        message="OAuth credentials uploaded and encrypted successfully",
+        secret=secret_response
+    )
+
+
+@router.get("/status", response_model=SecretStatusResponse, tags=["Secrets"])
+async def get_secret_status(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> SecretStatusResponse:
+    """
+    Check if user has uploaded OAuth credentials.
+    
+    This endpoint is used to determine if the user can proceed to the main application
+    or needs to complete the OAuth setup step.
+    
+    Args:
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        SecretStatusResponse: Secret status information
+    """
+    secret_service = SecretService(db)
+    return await secret_service.check_user_secret_status(current_user.id)
+
+
+@router.get("/list", response_model=List[SecretResponse], tags=["Secrets"])
+async def get_user_secrets(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> List[SecretResponse]:
+    """
+    Get list of user's OAuth credentials (non-sensitive data only).
+    
+    Args:
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        List[SecretResponse]: List of user's secrets
+    """
+    secret_service = SecretService(db)
+    return await secret_service.get_user_secrets(current_user.id)
+
+
+@router.delete("/{secret_id}", tags=["Secrets"])
+async def delete_secret(
+    secret_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> dict:
+    """
+    Delete (deactivate) an OAuth credential.
+    
+    Args:
+        secret_id: Secret ID to delete
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        dict: Deletion confirmation
+        
+    Raises:
+        HTTPException: If secret not found or deletion fails
+    """
+    secret_service = SecretService(db)
+    success = await secret_service.delete_secret(current_user.id, secret_id)
+    
+    if success:
+        return {"message": "OAuth credential deleted successfully"}
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete OAuth credential"
+        )
+
+
+@router.post("/reupload", response_model=SecretUploadResponse, tags=["Secrets"])
+async def reupload_oauth_secret(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> SecretUploadResponse:
+    """
+    Re-upload OAuth credentials (replaces existing active credentials).
+    
+    This is an alias for the upload endpoint but makes the intent clearer
+    when users want to replace their existing credentials.
+    
+    Args:
+        file: New JSON file containing OAuth credentials
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        SecretUploadResponse: Upload result
+    """
+    # This is the same as upload - it automatically deactivates existing secrets
+    return await upload_oauth_secret(file, current_user, db) 

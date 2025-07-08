@@ -28,73 +28,72 @@ def get_env_file() -> str:
 class Settings(BaseSettings):
     """Application settings with environment variable support."""
     
-    # Application
+    # Application (defaults - no env vars needed)
     app_name: str = "YouTube Shorts Creator API"
     version: str = "1.0.0"
     debug: bool = False
     
-    # Database
+    # Database (SECRET - requires env var)
     database_url: str = "postgresql://user:password@localhost:5432/youtube_shorts"
     database_echo: bool = False
     
-    # API Configuration
+    # API Configuration (defaults - no env vars needed)
     api_version: str = "v1"
     api_title: str = "YouTube Shorts Creator API"
     api_description: str = "AI-powered YouTube Shorts creation and automation"
     
-    # File Upload
+    # File Upload (defaults - no env vars needed)
     max_file_size_mb: int = 500
     upload_directory: str = "./uploads"
     allowed_video_types_str: str = "mp4,mov,avi,mkv"
     allowed_transcript_types_str: str = "txt,md"
     
-    # AWS S3 Configuration
+    # AWS S3 Configuration (SECRETS - require env vars)
     aws_access_key_id: Optional[str] = None
     aws_secret_access_key: Optional[str] = None
-    aws_region: str = "us-east-1"
     s3_bucket_name: Optional[str] = None
+    
+    # S3 Settings (defaults - no env vars needed)
+    aws_region: str = "us-east-1"
     s3_videos_prefix: str = "videos/"
     s3_transcripts_prefix: str = "transcripts/"
     s3_temp_prefix: str = "temp/"
     s3_processed_prefix: str = "processed/"
-    
-    # S3 Settings
     s3_presigned_url_expiry: int = 3600  # 1 hour in seconds
     s3_multipart_threshold: int = 100 * 1024 * 1024  # 100MB
     s3_cleanup_temp_hours: int = 24  # Hours after which temp files are deleted
     
-    # YouTube API Configuration
-    youtube_api_key: Optional[str] = None
-    youtube_client_id: str = ""
-    youtube_client_secret: str = ""
-    youtube_client_secrets_file: Optional[str] = None
-    youtube_refresh_token: str = ""
-    youtube_default_category: str = "entertainment"
-    youtube_default_privacy: str = "public"
-    
-    # OpenAI
+    # OpenAI (SECRET - requires env var)
     openai_api_key: Optional[str] = None
+    
+    # OpenAI Settings (defaults - no env vars needed)
     openai_tts_model: str = "tts-1"
     openai_default_voice: str = "alloy"
     
-    # Langfuse for observability
+    # Langfuse (SECRETS - require env vars)
     langfuse_secret_key: Optional[str] = None
     langfuse_public_key: Optional[str] = None
+    
+    # Langfuse Settings (defaults - no env vars needed)
     langfuse_host: str = "https://cloud.langfuse.com"
     
-    # Security
+    # Security (SECRET - requires env var)
     secret_key: str = "your-secret-key-change-this-in-production"
+    
+    # Security Settings (defaults - no env vars needed)
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     cors_origins_str: str = "http://localhost:3000,https://yourdomain.com,https://rohitk523.github.io,http://youtube.codewithrk.in,https://youtube.codewithrk.in"
     
-    # Background Jobs
+    # Background Jobs (SECRETS - require env vars)
     redis_url: Optional[str] = None
     redis_password: Optional[str] = None
+    
+    # Background Job Settings (defaults - no env vars needed)
     job_timeout_minutes: int = 30
     cleanup_interval_hours: int = 24
     
-    # File paths (legacy - kept for backward compatibility)
+    # File paths (defaults - no env vars needed)
     static_directory: str = "./static"
     temp_directory: str = "./temp"
     
@@ -131,15 +130,6 @@ class Settings(BaseSettings):
     def openai_configured(self) -> bool:
         """Check if OpenAI is properly configured."""
         return bool(self.openai_api_key)
-    
-    @property
-    def youtube_configured(self) -> bool:
-        """Check if YouTube API is properly configured."""
-        return bool(
-            self.youtube_api_key or 
-            self.youtube_client_secrets_file or
-            (self.youtube_client_id and self.youtube_client_secret)
-        )
     
     @property
     def redis_configured(self) -> bool:
@@ -276,12 +266,6 @@ def openai_configured() -> bool:
     """Check if OpenAI is properly configured."""
     settings = get_settings()
     return bool(settings.openai_api_key)
-
-
-def youtube_configured() -> bool:
-    """Check if YouTube API is properly configured."""
-    settings = get_settings()
-    return bool(settings.youtube_client_id or settings.youtube_client_secret)
 
 
 def redis_configured() -> bool:

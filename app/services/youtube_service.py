@@ -17,17 +17,18 @@ settings = get_settings()
 class YouTubeService:
     """Service for YouTube integration with specialized processing services."""
     
-    def __init__(self, progress_callback: Optional[Callable] = None):
+    def __init__(self, progress_callback: Optional[Callable] = None, credentials_dict: dict = None):
         """
         Initialize YouTube service with specialized services.
         
         Args:
             progress_callback: Optional callback for progress updates
+            credentials_dict: YouTube OAuth credentials as dict (per-user)
         """
         self.progress_callback = progress_callback
         self.tts_service = TTSService()
         self.video_service = VideoService()
-        self.youtube_upload_service = YouTubeUploadService()
+        self.youtube_upload_service = YouTubeUploadService(credentials_dict=credentials_dict)
         self.supported_voices = self.tts_service.supported_voices
         
         # Temporary file tracking for cleanup

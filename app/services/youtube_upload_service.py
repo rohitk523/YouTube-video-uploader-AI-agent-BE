@@ -7,6 +7,7 @@ import json
 import os
 from typing import Dict, Any, List, Optional
 from pathlib import Path
+import tempfile
 
 from app.config import get_settings
 
@@ -16,10 +17,11 @@ settings = get_settings()
 class YouTubeUploadService:
     """Service for uploading videos to YouTube using YouTube Data API v3."""
     
-    def __init__(self):
-        """Initialize YouTube upload service."""
-        self.api_key = getattr(settings, 'youtube_api_key', None)
-        self.client_secrets_file = getattr(settings, 'youtube_client_secrets_file', None)
+    def __init__(self, credentials_dict: dict = None):
+        """Initialize YouTube upload service. Accepts credentials as a dict (preferred) or falls back to config (legacy)."""
+        self.api_key = None
+        self.client_secrets_file = None
+        self.temp_file = None
         self.max_retries = 3
         self.supported_categories = {
             "film": "1",
@@ -38,6 +40,12 @@ class YouTubeUploadService:
             "science": "28",
             "nonprofits": "29"
         }
+        if credentials_dict:
+            # Write credentials dict to a temp file
+            self.temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.json')
+            self.temp_file.write(json.dumps(credentials_dict).encode('utf-8'))
+            self.temp_file.flush()
+            self.client_secrets_file = self.temp_file.name
     
     async def upload_video_to_youtube(
         self,
@@ -249,7 +257,6 @@ class YouTubeUploadService:
                 flow = InstalledAppFlow.from_client_secrets_file(
                     self.client_secrets_file, scopes
                 )
-                # Use port 8080 to match the redirect URIs in client secrets
                 creds = flow.run_local_server(port=8080, open_browser=True)
             
             # Save credentials for next run
