@@ -545,11 +545,10 @@ class SecretService:
             
             # Set expiry if available
             if secret.youtube_token_expires_at:
-                # Ensure the expiry datetime is timezone-aware
                 expiry = secret.youtube_token_expires_at
-                if expiry.tzinfo is None:
-                    # If timezone-naive, assume UTC
-                    expiry = expiry.replace(tzinfo=timezone.utc)
+                # Convert to naive UTC datetime as expected by google-auth library
+                if expiry.tzinfo is not None:
+                    expiry = expiry.astimezone(timezone.utc).replace(tzinfo=None)
                 creds.expiry = expiry
             
             # Check if token needs refresh
